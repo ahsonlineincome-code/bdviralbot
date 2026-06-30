@@ -45,7 +45,7 @@ MONGO_URL = os.getenv("MONGO_URI")
 OWNER_ID = int(os.getenv("ADMIN_ID", "0"))
 APP_URL = os.getenv("APP_URL")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "") 
-LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "") # 🛑 NEW: Log Channel Added
+LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "") 
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123") 
 BOT_USERNAME = "BDViralBoxProBot"
 
@@ -67,9 +67,8 @@ else:
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-client = AsyncIOMotorClient(MONGO_URL)
-db = client['movie_database']
-
+# 🛑 FIX: DATABASE INITIALLY SET TO NONE (Will connect in startup to avoid Event Loop Error)
+db = None 
 admin_cache = set([OWNER_ID]) 
 banned_cache = set() 
 trending_cache = {}
@@ -604,7 +603,12 @@ async def web_app():
 # ==========================================
 @app.on_event("startup")
 async def startup_event():
-    global video_queue
+    global db, video_queue
+    
+    # 🛑 FIX: CONNECTING DATABASE HERE SOLVES THE EVENT LOOP ERROR
+    db_client = AsyncIOMotorClient(MONGO_URL)
+    db = db_client['movie_database']
+    
     video_queue = asyncio.Queue()
     await init_db()
     await load_admins()
