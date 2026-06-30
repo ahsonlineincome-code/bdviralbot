@@ -73,7 +73,7 @@ OWNER_ID = int(os.getenv("ADMIN_ID", "0"))
 APP_URL = os.getenv("APP_URL")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "") 
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123") 
-BOT_USERNAME = "BDViralLinkProBot"
+BOT_USERNAME = "@bdviralboxx_bot"
 
 TUTORIAL_LINK = "https://t.me/HowtoDowlnoad/41"
 REQUEST_LINK = "https://t.me/+NEMfLNawn2hkNjg9"
