@@ -29,7 +29,8 @@ from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButto
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 from pydantic import BaseModel
-from pyrogram import Client as PyroClient
+# ✅ FIX 3: Lazy import - don't import at top level
+# from pyrogram import Client as PyroClient  
 from assistant.ai_reply import get_smart_reply
 
 # ==========================================
@@ -64,11 +65,8 @@ dp = Dispatcher(storage=MemoryStorage())
 app = FastAPI()
 security = HTTPBasic()
 
-# 🛑 PYRO CLIENT WITHOUT STARTING (FIXES EVENT LOOP CRASH)
-if SESSION_STRING:
-    pyro_app = PyroClient("user_session", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING, in_memory=True, no_updates=True)
-else:
-    pyro_app = PyroClient("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=TOKEN, in_memory=True, no_updates=True)
+# ✅ FIX 4: Initialize as None first - will be set in startup
+pyro_app = None
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -84,8 +82,11 @@ async def load_keyword_replies():
     if db is None:
         return
     keyword_replies_cache.clear()
-    async for kw in db.keyword_replies.find():
-        keyword_replies_cache[kw["keyword"]] = kw["reply_message"]
+    try:
+        async for kw in db.keyword_replies.find():
+            keyword_replies_cache[kw["keyword"]] = kw["reply_message"]
+    except Exception as e:
+        logger.error(f"Load keyword replies error: {e}")
 
 def clear_app_cache():
     trending_cache.clear()
@@ -120,16 +121,24 @@ async def generate_fast_thumbnail(video_path, output_path):
 # 🛑 HELPER: POST TO MAIN & LOG CHANNEL
 async def post_to_channels(photo_id, caption, markup):
     if CHANNEL_ID:
-        try: await bot.send_photo(chat_id=CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=markup)
-        except Exception as e: logger.error(f"Channel post error: {e}")
+        try: 
+            await bot.send_photo(chat_id=CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=markup)
+        except Exception as e: 
+            logger.error(f"Channel post error: {e}")
     if LOG_CHANNEL_ID:
-        try: await bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=markup)
-        except Exception as e: logger.error(f"Log channel post error: {e}")
+        try: 
+            await bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=markup)
+        except Exception as e: 
+            logger.error(f"Log channel post error: {e}")
 
 async def video_queue_worker():
     global is_processing
     while True:
         try:
+            if video_queue is None:
+                await asyncio.sleep(1)
+                continue
+                
             chat_id, message_id, aiogram_file_id, file_type = await video_queue.get()
             is_processing = True
             downloaded_file = None
@@ -139,6 +148,12 @@ async def video_queue_worker():
             try:
                 admin_id = chat_id
                 status_msg = await bot.send_message(admin_id, "⏳ <b>Processing Video...</b> (Downloading)")
+                
+                # ✅ FIX 5: Check if pyro_app is available
+                if pyro_app is None:
+                    await bot.edit_message_text("❌ Pyrogram not initialized!", chat_id=admin_id, message_id=status_msg.message_id)
+                    continue
+                    
                 pyro_msg = await pyro_app.get_messages(chat_id, message_id)
                 
                 total_vids = await db.movies.count_documents({})
@@ -166,7 +181,6 @@ async def video_queue_worker():
                     try:
                         copied_vid = await bot.copy_message(chat_id=DB_CHANNEL_ID, from_chat_id=chat_id, message_id=message_id)
                         db_file_id = copied_vid.message_id
-                        # ✅ FIX 3: Use FSInputFile properly
                         copied_photo = await bot.send_photo(DB_CHANNEL_ID, photo=FSInputFile(thumb_path))
                         db_photo_id = copied_photo.message_id
                         photo_id = copied_photo.photo[-1].file_id
@@ -174,7 +188,6 @@ async def video_queue_worker():
                         logger.error(f"DB Channel upload error: {e}")
                 
                 if os.path.exists(thumb_path):
-                    # ✅ FIX 4: Use FSInputFile properly
                     photo_msg = await bot.send_photo(admin_id, photo=FSInputFile(thumb_path), caption=f"✅ <b>{auto_title}</b> Successfully Uploaded!")
                     if not photo_id: photo_id = photo_msg.photo[-1].file_id
                 
@@ -214,27 +227,38 @@ async def video_queue_worker():
         except Exception as e:
             logger.error(f"Queue worker error: {e}")
             is_processing = False
+            await asyncio.sleep(1)
 
 async def load_admins():
     if db is None:
         return
     admin_cache.clear()
     admin_cache.add(OWNER_ID)
-    async for admin in db.admins.find(): 
-        admin_cache.add(admin["user_id"])
+    try:
+        async for admin in db.admins.find(): 
+            admin_cache.add(admin["user_id"])
+    except Exception as e:
+        logger.error(f"Load admins error: {e}")
 
 async def load_banned_users():
     if db is None:
         return
     banned_cache.clear()
-    async for b_user in db.banned.find(): 
-        banned_cache.add(b_user["user_id"])
+    try:
+        async for b_user in db.banned.find(): 
+            banned_cache.add(b_user["user_id"])
+    except Exception as e:
+        logger.error(f"Load banned users error: {e}")
 
 async def init_db():
     if db is None:
         return
-    await db.movies.create_index([("title", "text")])
-    await db.movies.create_index("created_at")
+    try:
+        await db.movies.create_index([("title", "text")])
+        await db.movies.create_index("created_at")
+        logger.info("✅ Database indexes created!")
+    except Exception as e:
+        logger.error(f"Init DB error: {e}")
 
 def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
     correct_username = secrets.compare_digest(credentials.username, "admin")
@@ -432,8 +456,11 @@ async def receive_movie_file(m: types.Message, state: FSMContext):
     if is_auto:
         aiogram_fid = m.video.file_id if m.video else m.document.file_id
         file_type = "video" if m.video else "document"
-        await video_queue.put((m.chat.id, m.message_id, aiogram_fid, file_type))
-        await m.answer(f"✅ ভিডিও অটো-প্রসেস কিউতে যুক্ত হয়েছে!", parse_mode="HTML")
+        if video_queue:
+            await video_queue.put((m.chat.id, m.message_id, aiogram_fid, file_type))
+            await m.answer(f"✅ ভিডিও অটো-প্রসেস কিউতে যুক্ত হয়েছে!", parse_mode="HTML")
+        else:
+            await m.answer("❌ Queue not ready!", parse_mode="HTML")
     else:
         fid = m.video.file_id if m.video else m.document.file_id
         ftype = "video" if m.video else "document"
@@ -446,6 +473,10 @@ async def receive_movie_file(m: types.Message, state: FSMContext):
         db_photo_id = None
 
         try:
+            # ✅ FIX 6: Check pyro_app before using
+            if pyro_app is None:
+                raise Exception("Pyrogram not initialized")
+                
             pyro_msg = await pyro_app.get_messages(m.chat.id, m.message_id)
             downloaded_file = await pyro_app.download_media(pyro_msg, file_name=f"temp_manual_{int(time.time())}.mp4")
             
@@ -456,7 +487,6 @@ async def receive_movie_file(m: types.Message, state: FSMContext):
                 try:
                     copied = await bot.copy_message(chat_id=DB_CHANNEL_ID, from_chat_id=m.chat.id, message_id=m.message_id)
                     db_file_id = copied.message_id
-                    # ✅ FIX 5: Use FSInputFile properly
                     copied_photo = await bot.send_photo(DB_CHANNEL_ID, photo=FSInputFile(thumb_path))
                     db_photo_id = copied_photo.message_id
                     photo_id = copied_photo.photo[-1].file_id
@@ -464,7 +494,6 @@ async def receive_movie_file(m: types.Message, state: FSMContext):
                     logger.error(f"Manual upload DB channel error: {e}")
             
             if os.path.exists(thumb_path) and not photo_id:
-                # ✅ FIX 6: Use FSInputFile properly
                 sent_photo = await m.answer_photo(photo=FSInputFile(thumb_path))
                 photo_id = sent_photo.photo[-1].file_id
                 
@@ -742,9 +771,9 @@ async def web_app():
 # ==========================================
 @app.on_event("startup")
 async def startup_event():
-    global db, video_queue
+    global db, video_queue, pyro_app
     
-    # 🛑 FIX: DATABASE CONNECTED INSIDE STARTUP
+    # ✅ FIX 7: DATABASE CONNECTED INSIDE STARTUP
     try:
         db_client = AsyncIOMotorClient(MONGO_URL)
         db = db_client['movie_database']
@@ -752,6 +781,35 @@ async def startup_event():
     except Exception as e:
         logger.error(f"❌ Database connection failed: {e}")
         db = None
+    
+    # ✅ FIX 8: PYROGRAM INITIALIZED INSIDE STARTUP (FIXES EVENT LOOP ERROR!)
+    try:
+        from pyrogram import Client as PyroClient
+        
+        if SESSION_STRING:
+            pyro_app = PyroClient(
+                "user_session", 
+                api_id=API_ID, 
+                api_hash=API_HASH, 
+                session_string=SESSION_STRING, 
+                in_memory=True, 
+                no_updates=True
+            )
+        else:
+            pyro_app = PyroClient(
+                "bot_session", 
+                api_id=API_ID, 
+                api_hash=API_HASH, 
+                bot_token=TOKEN, 
+                in_memory=True, 
+                no_updates=True
+            )
+        
+        logger.info("✅ Pyrogram client initialized successfully!")
+    except Exception as e:
+        logger.error(f"❌ Pyrogram initialization failed: {e}")
+        logger.warning("⚠️ Video download features will be disabled!")
+        pyro_app = None
     
     video_queue = asyncio.Queue()
     
@@ -761,13 +819,15 @@ async def startup_event():
         await load_banned_users()
         await load_keyword_replies()
     
-    # 🛑 NO PYRO APP START NEEDED! IT WORKS WITHOUT STARTING.
-    
+    # Start polling and queue worker
     asyncio.create_task(dp.start_polling(bot))
     asyncio.create_task(video_queue_worker())
+    
+    logger.info("🚀 Bot started successfully!")
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    logger.info("🛑 Shutting down...")
     try:
         await dp.stop_polling()
     except:
@@ -776,6 +836,13 @@ async def shutdown_event():
         await bot.session.close()
     except:
         pass
+    # ✅ FIX 9: Clean up pyro_app
+    if pyro_app:
+        try:
+            await pyro_app.stop()
+        except:
+            pass
+    logger.info("✅ Shutdown complete!")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
