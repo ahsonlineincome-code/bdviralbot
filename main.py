@@ -928,7 +928,7 @@ async def web_app():
 </html>""")
 
 # ==========================================
-# STARTUP EVENT
+# STARTUP & SHUTDOWN EVENT (BOT POLLING FIX)
 # ==========================================
 @app.on_event("startup")
 async def startup_event():
@@ -939,8 +939,19 @@ async def startup_event():
     await load_admins()
     await load_banned_users()
     await load_keyword_replies()
+    
+    # 🛑 বটকে টেলিগ্রামের মেসেজ শুনতে বলা হচ্ছে (এটাই মূল কাজ)
+    asyncio.create_task(dp.start_polling(bot))
+    
+    # ব্যাকগ্রাউন্ড ওয়ার্কার চালু করা হচ্ছে
     asyncio.create_task(video_queue_worker())
     asyncio.create_task(auto_delete_worker())
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # সার্ভার বন্ধ হলে বটের পোলিং ও সেশন সুন্দরভাবে বন্ধ করা হচ্ছে
+    await dp.stop_polling()
+    await bot.session.close()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
