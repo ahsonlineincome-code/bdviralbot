@@ -1012,7 +1012,7 @@ async def web_ui():
     <div id="welcomeScreen">
         <div class="welcome-logo">🎬</div>
         <div class="welcome-title">BD Viral Box</div>
-        <div class="welcome-tagline">খারাপ দুনিয়ায় সাগরম</div>
+        <div class="welcome-tagline">খারাপ দুনিয়ায় আপনাকে স্বাগতম</div>
         <button class="welcome-btn" onclick="enterApp()">▶ Enter Now</button>
         <div class="welcome-bot">@MovieBoxx_bot</div>
     </div>
