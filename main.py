@@ -67,14 +67,13 @@ banned_cache = set()
 broadcast_queue = asyncio.Queue()
 
 # ==========================================
-# 2. FSM States - শুধু ৩টি লাগবে!
+# 2. FSM States
 # ==========================================
 class AdminStates(StatesGroup):
     waiting_for_bcast = State()
     waiting_for_reply = State()
-    waiting_for_photo = State()   # ১ম ধাপ
-    waiting_for_title = State()   # ২য় ধাপ
-    # quality, year, cats - REMOVED!
+    waiting_for_photo = State()
+    waiting_for_title = State()
 
 # ==========================================
 # 3. Database Init
@@ -103,7 +102,20 @@ async def init_db():
         pass
 
 # ==========================================
-# 4. Security
+# 4. 🔧 HELPER: File ID → URL
+# ==========================================
+async def get_file_url(file_id: str) -> str:
+    """Telegram file_id থেকে সরাসরি downloadable URL বানায়"""
+    try:
+        file_info = await bot.get_file(file_id)
+        if file_info.file_path:
+            return f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+    except:
+        pass
+    return ""
+
+# ==========================================
+# 5. Security
 # ==========================================
 def validate_tg_data(init_data: str) -> bool:
     try:
@@ -127,7 +139,7 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
     return True
 
 # ==========================================
-# 5. Background Workers
+# 6. Background Workers
 # ==========================================
 async def auto_delete_worker():
     while True:
@@ -166,7 +178,7 @@ async def broadcast_queue_worker():
             await asyncio.sleep(5)
 
 # ==========================================
-# 🚀 STARTUP - Bot Polling
+# 🚀 STARTUP
 # ==========================================
 @app.on_event("startup")
 async def on_startup():
@@ -186,7 +198,7 @@ async def on_shutdown():
     await bot.session.close()
 
 # ==========================================
-# 6. /start Command
+# 7. /start Command
 # ==========================================
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
@@ -237,7 +249,7 @@ async def start_cmd(message: types.Message, state: FSMContext):
     await message.answer(text, reply_markup=markup, parse_mode="HTML")
 
 # ==========================================
-# 7. Basic Commands
+# 8. Basic Commands
 # ==========================================
 @dp.message(Command("stats"))
 async def bot_stats(m: types.Message):
@@ -273,7 +285,6 @@ async def cancel_cmd(m: types.Message, state: FSMContext):
     await state.clear()
     await m.answer("❌ বাতিল করা হয়েছে!", parse_mode="HTML")
 
-# User messages forward to admin
 @dp.message(lambda m: m.chat.type == "private" and m.from_user.id not in admin_cache)
 async def handle_user_messages(m: types.Message):
     if m.content_type not in ['text']:
@@ -307,7 +318,7 @@ async def send_reply_to_user(m: types.Message, state: FSMContext):
             await m.answer("❌ ব্যর্থ।")
 
 # ==========================================
-# 8. Admin Settings Commands
+# 9. Admin Settings
 # ==========================================
 @dp.message(Command("setadcount"))
 async def set_ad_count(m: types.Message):
@@ -381,7 +392,7 @@ async def add_vip_cmd(m: types.Message):
     except: await m.answer("⚠️ /addvip ID", parse_mode="HTML")
 
 # ==========================================
-# 9. 🎯 SIMPLIFIED UPLOAD - মাত্র ৩ ধাপ!
+# 10. 🎯 UPLOAD - URL সহ সেভ করা হচ্ছে!
 # ==========================================
 
 # ধাপ ১: ভিডিও পাঠালে
@@ -407,20 +418,18 @@ async def receive_poster(m: types.Message, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_title)
     await m.answer("✅ পোস্টার পেয়েছি!\n\nএবার <b>ভিডিওর নাম</b> লিখুন।", parse_mode="HTML")
 
-# যদি ছবির বদলে অন্য কিছু পাঠায়
 @dp.message(AdminStates.waiting_for_photo)
 async def wrong_photo(m: types.Message):
     await m.answer("⚠️ শুধু <b>ছবি (Photo)</b> পাঠান!\nঅথবা /cancel লিখুন।", parse_mode="HTML")
 
-# ধাপ ৩: নাম পাঠালে → সরাসরি Done বাটন!
+# ধাপ ৩: নাম পাঠালে → Done বাটন!
 @dp.message(AdminStates.waiting_for_title, F.text)
 async def receive_title_and_finish(m: types.Message, state: FSMContext):
     await state.update_data(title=m.text.strip())
     
-    # সরাসরি বাটন দেখাও - কোনো quality/year/category নেই!
     builder = InlineKeyboardBuilder()
     builder.button(text="🚀 Upload + Broadcast", callback_data="action_new_bcast")
-    builder.button(text="➕ Upload Only (No Broadcast)", callback_data="action_add_file")
+    builder.button(text="➕ Upload Only", callback_data="action_add_file")
     builder.adjust(1)
     
     await m.answer(
@@ -429,35 +438,38 @@ async def receive_title_and_finish(m: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# যদি নামের বদলে অন্য কিছু পাঠায়
 @dp.message(AdminStates.waiting_for_title)
 async def wrong_title(m: types.Message):
     await m.answer("⚠️ দয়া করে <b>নাম (টেক্সট)</b> লিখুন!\nঅথবা /cancel লিখুন।", parse_mode="HTML")
 
 # ==========================================
-# 10. Upload Actions
+# 11. Upload Actions - 🔧 URL রেজল্ভ করে সেভ!
 # ==========================================
 @dp.callback_query(F.data == "action_new_bcast")
 async def action_new_broadcast(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await state.clear()
     
-    # ডাটাবেসে সেভ - স্বয়ংক্রিয়ভাবে Adult Content ক্যাটাগরি
+    # 🔧 URL রেজল্ভ করা হচ্ছে!
+    poster_url = await get_file_url(data["photo_id"])
+    video_url = await get_file_url(data["file_id"])
+    
     await db.movies.insert_one({
         "title": data["title"],
         "quality": "N/A",
         "photo_id": data["photo_id"],
+        "poster_url": poster_url,  # ✅ রিয়েল URL সেভ!
         "file_id": data["file_id"],
+        "video_url": video_url,    # ✅ রিয়েল URL সেভ!
         "file_type": data["file_type"],
         "year": "N/A",
-        "categories": ["Adult Content"],  # অটো সেট
+        "categories": ["Adult Content"],
         "clicks": 0,
         "created_at": datetime.datetime.utcnow()
     })
     
     await c.message.edit_text(f"🎉 <b>{data['title']}</b> যুক্ত হয়েছে!\n\n⏳ ব্রডকাস্ট শুরু হচ্ছে...", parse_mode="HTML")
     
-    # লগ চ্যানেলে পোস্ট
     if LOG_CHANNEL_ID:
         try:
             log_kb = [
@@ -469,7 +481,6 @@ async def action_new_broadcast(c: types.CallbackQuery, state: FSMContext):
         except Exception as e:
             print(f"Log error: {e}")
 
-    # ব্রডকাস্ট কিউতে পাঠাও
     await broadcast_queue.put({"data": data, "admin_id": c.from_user.id})
     await c.answer("🚀 ব্রডকাস্ট শুরু!")
 
@@ -478,23 +489,29 @@ async def action_add_file_only(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await state.clear()
     
+    # 🔧 URL রেজল্ভ করা হচ্ছে!
+    poster_url = await get_file_url(data["photo_id"])
+    video_url = await get_file_url(data["file_id"])
+    
     await db.movies.insert_one({
         "title": data["title"],
         "quality": "N/A",
         "photo_id": data["photo_id"],
+        "poster_url": poster_url,  # ✅ রিয়েল URL সেভ!
         "file_id": data["file_id"],
+        "video_url": video_url,    # ✅ রিয়েল URL সেভ!
         "file_type": data["file_type"],
         "year": "N/A",
-        "categories": ["Adult Content"],  # অটো সেট
+        "categories": ["Adult Content"],
         "clicks": 0,
         "created_at": datetime.datetime.utcnow()
     })
     
-    await c.message.edit_text(f"✅ <b>{data['title']}</b> যুক্ত হয়েছে! (ব্রডকাস্ট ছাড়া)", parse_mode="HTML")
+    await c.message.edit_text(f"✅ <b>{data['title']}</b> যুক্ত হয়েছে!", parse_mode="HTML")
     await c.answer("✅ ডান!")
 
 # ==========================================
-# 11. Broadcast Functions
+# 12. Broadcast
 # ==========================================
 async def run_movie_broadcast(data, admin_id):
     bcast_success = 0
@@ -578,14 +595,13 @@ async def handle_trx_approval(c: types.CallbackQuery):
         await db.payments.update_one({"_id": ObjectId(pay_id)}, {"$set": {"status": "rejected"}})
         await c.message.edit_text(c.message.text + "\n\n❌ <b>রিজেক্ট!</b>", parse_mode="HTML")
 
-# Photo ID getter
 @dp.message(F.photo, StateFilter(None))
 async def get_file_id_for_admin(message: types.Message):
     if message.from_user.id not in admin_cache: return
     await message.answer(f"🖼️ <b>File ID:</b>\n\n<code>{message.photo[-1].file_id}</code>", parse_mode="HTML")
 
 # ==========================================
-# 12. Admin Panel
+# 13. Admin Panel
 # ==========================================
 @app.get("/panel", response_class=HTMLResponse)
 async def admin_panel_ui(auth: bool = Depends(verify_admin)):
@@ -603,12 +619,21 @@ async def admin_stats(auth: bool = Depends(verify_admin)):
     total_clicks = total_clicks_res[0]["total"] if total_clicks_res else 0
     return {"total_users": total_users, "today_users": today_users, "active_users": active_users, "total_clicks": total_clicks, "today_clicks": 0}
 
+# ==========================================
+# 14. 🔧 API - poster_url ও video_url রিটার্ন করে!
+# ==========================================
 @app.get("/api/movies/trending")
 async def get_trending_movies():
     try:
         now = datetime.datetime.utcnow()
         movies = await db.movies.find({"created_at": {"$gte": now - datetime.timedelta(days=30)}}).sort("clicks", -1).limit(10).to_list(10)
-        for m in movies: m["_id"] = str(m["_id"])
+        for m in movies:
+            m["_id"] = str(m["_id"])
+            # যদি পুরনো ভিডিও হয় যেগুলোতে poster_url নেই
+            if not m.get("poster_url"):
+                m["poster_url"] = await get_file_url(m["photo_id"])
+            if not m.get("video_url"):
+                m["video_url"] = await get_file_url(m["file_id"])
         return movies
     except:
         return []
@@ -617,9 +642,23 @@ async def get_trending_movies():
 async def get_recent_movies():
     try:
         movies = await db.movies.find({}).sort("created_at", -1).limit(10).to_list(10)
-        for m in movies: m["_id"] = str(m["_id"])
-        return movies
-    except:
+        result = []
+        for m in movies:
+            m["_id"] = str(m["_id"])
+            # যদি পুরনো ভিডিও হয় যেগুলোতে poster_url নেই
+            if not m.get("poster_url"):
+                m["poster_url"] = await get_file_url(m["photo_id"])
+                # ডাটাবেসেও আপডেট করে রাখি
+                if m["poster_url"]:
+                    await db.movies.update_one({"_id": ObjectId(m["_id"])}, {"$set": {"poster_url": m["poster_url"]}})
+            if not m.get("video_url"):
+                m["video_url"] = await get_file_url(m["file_id"])
+                if m["video_url"]:
+                    await db.movies.update_one({"_id": ObjectId(m["_id"])}, {"$set": {"video_url": m["video_url"]}})
+            result.append(m)
+        return result
+    except Exception as e:
+        print(f"Recent movies error: {e}")
         return []
 
 @app.get("/api/admin/movies")
@@ -646,7 +685,7 @@ async def user_ping(request: Request):
         return {"ok": False}
 
 # ==========================================
-# 13. 🎬 Web App UI - Welcome Animation সহ!
+# 15. 🎬 Web App - 2nd Pic এর মতো Splash + অটো রিডাইরেক্ট!
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def web_ui():
@@ -658,52 +697,87 @@ async def web_ui():
     adult_direct_links = adl_cfg.get('links', []) if adl_cfg else []
     adl_json = json.dumps(adult_direct_links)
 
-    html_code = '''<!DOCTYPE html><html lang="bn"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>BD Viral Box</title><script src="https://telegram.org/js/telegram-web-app.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');*{margin:0;padding:0;box-sizing:border-box}body{background:#0f172a;font-family:'Inter',sans-serif;color:#fff;overscroll-behavior-y:none}
+    html_code = '''<!DOCTYPE html><html lang="bn"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>BD Viral Box</title><script src="https://telegram.org/js/telegram-web-app.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"><style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f172a;font-family:'Poppins',sans-serif;color:#fff;overscroll-behavior-y:none;overflow:hidden;height:100vh}
 
-/* ========== WELCOME SCREEN WITH ANIMATION ========== */
-#welcomeScreen{position:fixed;top:0;left:0;width:100%;height:100%;background:linear-gradient(135deg,#0f172a 0%,#1a0a0a 50%,#0f172a 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;transition:opacity .6s ease,transform .6s ease}
-#welcomeScreen.hide{opacity:0;transform:scale(1.2);pointer-events:none}
+/* ========== SPLASH SCREEN - 2nd Pic Style ========== */
+#splash{position:fixed;top:0;left:0;width:100%;height:100%;background:linear-gradient(180deg,#0f172a 0%,#0a0a12 40%,#1a0a0a 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;transition:opacity .8s ease,transform .8s ease}
+#splash.hide{opacity:0;transform:scale(1.3);pointer-events:none}
 
-.welcome-logo{width:130px;height:130px;border-radius:35px;background:linear-gradient(135deg,#ff416c,#ff4b2b);display:flex;align-items:center;justify-content:center;font-size:55px;margin-bottom:30px;box-shadow:0 10px 50px rgba(255,65,108,.5);animation:logoPulse 2s ease-in-out infinite,logoFloat 3s ease-in-out infinite}
-@keyframes logoPulse{0%,100%{box-shadow:0 10px 50px rgba(255,65,108,.5)}50%{box-shadow:0 10px 80px rgba(255,65,108,.8),0 0 120px rgba(255,75,43,.3)}}
-@keyframes logoFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+.splash-icon{
+    width:90px;height:90px;border-radius:50%;
+    background:linear-gradient(135deg,#ff416c,#ff4b2b);
+    display:flex;align-items:center;justify-content:center;
+    font-size:40px;margin-bottom:25px;
+    box-shadow:0 0 60px rgba(255,65,108,.4),0 0 120px rgba(255,75,43,.2);
+    animation:splashGlow 2s ease-in-out infinite
+}
+@keyframes splashGlow{
+    0%,100%{box-shadow:0 0 60px rgba(255,65,108,.4),0 0 120px rgba(255,75,43,.2);transform:scale(1)}
+    50%{box-shadow:0 0 80px rgba(255,65,108,.7),0 0 160px rgba(255,75,43,.4);transform:scale(1.05)}
+}
 
-.welcome-title{font-size:38px;font-weight:900;background:linear-gradient(45deg,#ff416c,#ff4b2b,#ff6b6b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:10px;letter-spacing:-1px;animation:titleSlide .8s ease-out}
-@keyframes titleSlide{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.splash-title{
+    font-size:42px;font-weight:900;letter-spacing:-1px;
+    background:linear-gradient(135deg,#ff416c 0%,#ff4b2b 50%,#ff6b6b 100%);
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+    animation:splashTitleIn .8s ease-out both;
+    text-shadow:0 0 80px rgba(255,65,108,.3)
+}
+@keyframes splashTitleIn{
+    from{opacity:0;transform:translateY(30px) scale(.9)}
+    to{opacity:1;transform:translateY(0) scale(1)}
+}
 
-.welcome-tagline{font-size:15px;color:#94a3b8;margin-bottom:45px;animation:tagFade 1s ease-out .3s both}
-@keyframes tagFade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.splash-tagline{
+    font-size:14px;color:#7c8ba1;margin-top:8px;font-weight:500;
+    animation:splashTagIn .8s ease-out .3s both;
+    letter-spacing:.5px
+}
+@keyframes splashTagIn{from{opacity:0;transform:translateY(15px)}to{opacity:1;transform:translateY(0)}}
 
-.welcome-btn{background:linear-gradient(135deg,#ff416c,#ff4b2b);color:#fff;border:none;padding:16px 55px;border-radius:50px;font-size:17px;font-weight:800;cursor:pointer;box-shadow:0 8px 30px rgba(255,65,108,.5);transition:transform .2s,box-shadow .2s;animation:btnPop 1s ease-out .5s both;letter-spacing:.5px}
-.welcome-btn:active{transform:scale(.93)!important;box-shadow:0 4px 15px rgba(255,65,108,.4)}
-@keyframes btnPop{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:scale(1)}}
+.splash-bot{
+    position:absolute;bottom:40px;color:#3d4555;font-size:12px;font-weight:500;
+    animation:splashBotIn 1s ease-out .6s both
+}
+@keyframes splashBotIn{from{opacity:0}to{opacity:1}}
 
-.welcome-bot{position:absolute;bottom:35px;color:#475569;font-size:13px;animation:botFade 1s ease-out .7s both}
-@keyframes botFade{from{opacity:0}to{opacity:1}}
+/* Loading dots under tagline */
+.splash-dots{margin-top:20px;display:flex;gap:8px;animation:splashTagIn .8s ease-out .5s both}
+.splash-dots span{
+    width:8px;height:8px;border-radius:50%;background:#ff416c;
+    animation:dotBounce 1.4s ease-in-out infinite
+}
+.splash-dots span:nth-child(2){animation-delay:.2s}
+.splash-dots span:nth-child(3){animation-delay:.4s}
+@keyframes dotBounce{
+    0%,80%,100%{transform:scale(.6);opacity:.4}
+    40%{transform:scale(1);opacity:1}
+}
 
 /* ========== MAIN APP ========== */
-#mainApp{display:none;padding-bottom:80px}
+#mainApp{display:none;padding-bottom:80px;height:100vh;overflow-y:auto}
 .app-header{padding:16px 20px;display:flex;align-items:center;justify-content:space-between;background:rgba(15,23,42,.95);backdrop-filter:blur(10px);position:sticky;top:0;z-index:100;border-bottom:1px solid rgba(255,255,255,.05)}
-.app-logo{font-size:20px;font-weight:800;background:linear-gradient(45deg,#ff416c,#ff4b2b);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.app-logo{font-size:18px;font-weight:800;background:linear-gradient(45deg,#ff416c,#ff4b2b);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .search-container{padding:12px 20px}
 .search-box{display:flex;align-items:center;background:#1e293b;border-radius:12px;padding:12px 16px;border:1px solid #334155}
 .search-box i{color:#64748b;margin-right:12px}
-.search-box input{flex:1;background:none;border:none;outline:none;color:#fff;font-size:14px;font-family:'Inter',sans-serif}
+.search-box input{flex:1;background:none;border:none;outline:none;color:#fff;font-size:14px;font-family:'Poppins',sans-serif}
 .search-box input::placeholder{color:#64748b}
 .category-section{padding:8px 20px 16px}
 .category-btn{background:linear-gradient(135deg,#ff416c,#ff4b2b);color:#fff;border:none;padding:10px 28px;border-radius:25px;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 4px 15px rgba(255,65,108,.3)}
-.category-btn:active{transform:scale(.95)}
-.section-title{padding:10px 20px;font-size:18px;font-weight:800;display:flex;align-items:center;gap:10px}
+.section-title{padding:10px 20px;font-size:17px;font-weight:800;display:flex;align-items:center;gap:10px}
 .section-title .fire{color:#ff416c}
 .movie-grid{padding:0 20px;display:flex;flex-direction:column;gap:14px}
 .movie-card{display:flex;gap:14px;background:#1e293b;border-radius:16px;overflow:hidden;border:1px solid #334155;cursor:pointer;transition:transform .2s,border-color .2s;position:relative}
 .movie-card:active{transform:scale(.98);border-color:#ff416c}
 .movie-card-rank{position:absolute;top:10px;left:10px;background:rgba(0,0,0,.8);color:#ff416c;font-size:11px;font-weight:800;padding:3px 8px;border-radius:6px;z-index:2}
-.movie-card-badge{position:absolute;top:10px;right:10px;background:#ef4444;color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:6px;z-index:2;animation:badgePulse 2s infinite}
-@keyframes badgePulse{0%,100%{opacity:1}50%{opacity:.7}}
+.movie-card-badge{position:absolute;top:10px;right:10px;background:#ef4444;color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:6px;z-index:2}
 .movie-poster{width:110px;min-height:150px;object-fit:cover;flex-shrink:0;background:#334155}
 .movie-info{flex:1;padding:14px 14px 14px 0;display:flex;flex-direction:column;justify-content:center}
-.movie-title{font-size:14px;font-weight:700;margin-bottom:8px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.movie-title{font-size:14px;font-weight:600;margin-bottom:8px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .movie-meta{font-size:12px;color:#94a3b8;margin-bottom:10px;display:flex;gap:10px}
 .movie-meta span{display:flex;align-items:center;gap:4px}
 .movie-play-btn{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,#ff416c,#ff4b2b);color:#fff;border:none;padding:8px 18px;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer;width:fit-content}
@@ -717,48 +791,47 @@ async def web_ui():
 .detail-title{font-size:22px;font-weight:800;margin-bottom:10px;line-height:1.3}
 .detail-meta{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
 .detail-meta span{background:#1e293b;padding:6px 14px;border-radius:20px;font-size:12px;color:#94a3b8;border:1px solid #334155}
-.detail-download-btn{display:flex;align-items:center;justify-content:center;gap:10px;background:linear-gradient(135deg,#ff416c,#ff4b2b);color:#fff;border:none;padding:16px;border-radius:16px;font-size:16px;font-weight:800;width:100%;cursor:pointer;box-shadow:0 5px 25px rgba(255,65,108,.4);margin-bottom:16px;transition:transform .2s}
-.detail-download-btn:active{transform:scale(.98)}
+.detail-download-btn{display:flex;align-items:center;justify-content:center;gap:10px;background:linear-gradient(135deg,#ff416c,#ff4b2b);color:#fff;border:none;padding:16px;border-radius:16px;font-size:16px;font-weight:800;width:100%;cursor:pointer;box-shadow:0 5px 25px rgba(255,65,108,.4);margin-bottom:16px}
 .detail-ad-link{display:block;background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px 16px;color:#60a5fa;text-decoration:none;font-size:13px;font-weight:600;margin-bottom:10px;text-align:center}
 
 /* Bottom Nav */
 .bottom-nav{position:fixed;bottom:0;left:0;width:100%;background:rgba(15,23,42,.98);backdrop-filter:blur(10px);display:flex;border-top:1px solid rgba(255,255,255,.05);z-index:200;padding:8px 0}
-.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:#64748b;font-size:10px;font-weight:600;cursor:pointer;padding:6px 0;transition:color .2s}
+.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:#64748b;font-size:10px;font-weight:600;cursor:pointer;padding:6px 0}
 .nav-item.active{color:#ff416c}
 .nav-item i{font-size:20px}
-
 .loading{text-align:center;padding:40px;color:#64748b}
 .loading i{font-size:30px;animation:spin 1s linear infinite;margin-bottom:10px;display:block}
 @keyframes spin{100%{transform:rotate(360deg)}}
 .no-results{text-align:center;padding:60px 20px;color:#64748b}
 .no-results i{font-size:50px;margin-bottom:15px;display:block;color:#334155}
-::-webkit-scrollbar{width:0}</style></head><body>
+::-webkit-scrollbar{width:0}
+</style></head><body>
 
-<!-- WELCOME SCREEN -->
-<div id="welcomeScreen">
-    <div class="welcome-logo">🎬</div>
-    <div class="welcome-title">BD Viral Box</div>
-    <div class="welcome-tagline">খারাপ দুনিয়ায় সাগরম</div>
-    <button class="welcome-btn" onclick="enterApp()">▶ Enter Now</button>
-    <div class="welcome-bot">@MovieBoxx_bot</div>
+<!-- ========== SPLASH SCREEN (No Button, Auto Redirect) ========== -->
+<div id="splash">
+    <div class="splash-icon">🎬</div>
+    <div class="splash-title">BD Viral Box</div>
+    <div class="splash-tagline">খারাপ দুনিয়ায় আপনাকে স্বাগতম</div>
+    <div class="splash-dots"><span></span><span></span><span></span></div>
+    <div class="splash-bot">@MovieBoxx_bot</div>
 </div>
 
-<!-- MAIN APP -->
+<!-- ========== MAIN APP ========== -->
 <div id="mainApp">
     <div class="app-header"><div class="app-logo">BD Viral Box</div></div>
     <div class="search-container"><div class="search-box"><i class="fa-solid fa-magnifying-glass"></i><input type="text" id="searchInput" placeholder="Search videos..." oninput="handleSearch()"></div></div>
-    <div class="category-section"><button class="category-btn active" onclick="loadHome()">🏠 HOME</button></div>
+    <div class="category-section"><button class="category-btn active">🏠 HOME</button></div>
     <div id="contentArea">
         <div class="section-title"><span class="fire">🔥</span> Trending Now</div>
         <div class="movie-grid" id="movieGrid"><div class="loading"><i class="fa-solid fa-spinner"></i>Loading...</div></div>
     </div>
     <div class="bottom-nav">
-        <div class="nav-item active" onclick="loadHome()" id="navHome"><i class="fa-solid fa-house"></i><span>Home</span></div>
-        <div class="nav-item" onclick="focusSearch()" id="navSearch"><i class="fa-solid fa-magnifying-glass"></i><span>Search</span></div>
+        <div class="nav-item active" id="navHome"><i class="fa-solid fa-house"></i><span>Home</span></div>
+        <div class="nav-item" id="navSearch" onclick="focusSearch()"><i class="fa-solid fa-magnifying-glass"></i><span>Search</span></div>
     </div>
 </div>
 
-<!-- DETAIL PAGE -->
+<!-- ========== DETAIL PAGE ========== -->
 <div id="detailPage">
     <div class="detail-back" onclick="closeDetail()"><i class="fa-solid fa-arrow-left"></i><span>Back</span></div>
     <img class="detail-poster" id="detailPoster" src="" alt="">
@@ -773,18 +846,21 @@ async def web_ui():
 <script>
 const tg=window.Telegram&&window.Telegram.WebApp;
 if(tg){tg.ready();tg.expand()}
+
 let userId=null,allMovies=[],currentMovie=null,clickCount=0;
 let directLinks=''' + dl_json + ''';
 let adultDirectLinks=''' + adl_json + ''';
 
-function enterApp(){
-    document.getElementById("welcomeScreen").classList.add("hide");
-    setTimeout(()=>{
-        document.getElementById("welcomeScreen").style.display="none";
+// ========== AUTO REDIRECT - কোনো বাটন নেই! ==========
+setTimeout(function(){
+    document.getElementById("splash").classList.add("hide");
+    setTimeout(function(){
+        document.getElementById("splash").style.display="none";
         document.getElementById("mainApp").style.display="block";
-    },600);
-    initUser();loadMovies();
-}
+    },800);
+    initUser();
+    loadMovies();
+}, 2500);
 
 async function initUser(){
     if(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user){
@@ -795,24 +871,44 @@ async function initUser(){
 }
 
 async function loadMovies(){
-    try{const r=await fetch("/api/movies/recent");allMovies=await r.json();renderMovies(allMovies)}
-    catch(e){document.getElementById("movieGrid").innerHTML='<div class="no-results"><i class="fa-solid fa-triangle-exclamation"></i>Failed</div>'}
+    try{
+        const r=await fetch("/api/movies/recent");
+        allMovies=await r.json();
+        renderMovies(allMovies);
+    }catch(e){
+        document.getElementById("movieGrid").innerHTML='<div class="no-results"><i class="fa-solid fa-triangle-exclamation"></i>Failed to load</div>';
+    }
 }
 
 function renderMovies(movies){
     const g=document.getElementById("movieGrid");
-    if(!movies||!movies.length){g.innerHTML='<div class="no-results"><i class="fa-solid fa-film"></i>No videos</div>';return}
-    g.innerHTML=movies.map((m,i)=>'<div class="movie-card" onclick="openDetail(\\''+m._id+'\\')"><div class="movie-card-rank">'+String(i+1).padStart(2,"0")+'</div><div class="movie-card-badge">18+</div><img class="movie-poster" src="https://api.telegram.org/file/bot' + (TOKEN||"") + '/" onerror="this.style.background=\\'#334155\\'"><div class="movie-info"><div class="movie-title">'+m.title+'</div><div class="movie-meta"><span><i class="fa-solid fa-eye"></i> '+(m.clicks||0)+'</span></div><div class="movie-play-btn"><i class="fa-solid fa-play"></i> Watch</div></div></div>').join("");
+    if(!movies||!movies.length){g.innerHTML='<div class="no-results"><i class="fa-solid fa-film"></i>No videos yet</div>';return}
+    g.innerHTML=movies.map((m,i)=>{
+        // 🔧 poster_url ব্যবহার করা হচ্ছে সরাসরি!
+        const poster=m.poster_url||"";
+        return '<div class="movie-card" onclick="openDetail(\\''+m._id+'\\')"><div class="movie-card-rank">'+String(i+1).padStart(2,"0")+'</div><div class="movie-card-badge">18+</div><img class="movie-poster" src="'+poster+'" onerror="this.style.background=\\'#334155\\'" alt=""><div class="movie-info"><div class="movie-title">'+m.title+'</div><div class="movie-meta"><span><i class="fa-solid fa-eye"></i> '+(m.clicks||0)+'</span></div><div class="movie-play-btn"><i class="fa-solid fa-play"></i> Watch</div></div></div>';
+    }).join("");
 }
 
-function handleSearch(){const q=document.getElementById("searchInput").value.toLowerCase();if(!q){renderMovies(allMovies);return}renderMovies(allMovies.filter(m=>(m.title||"").toLowerCase().includes(q)))}
-function focusSearch(){document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active"));document.getElementById("navSearch").classList.add("active");document.getElementById("searchInput").focus()}
-function loadHome(){document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active"));document.getElementById("navHome").classList.add("active");document.getElementById("searchInput").value="";renderMovies(allMovies)}
+function handleSearch(){
+    const q=document.getElementById("searchInput").value.toLowerCase();
+    if(!q){renderMovies(allMovies);return}
+    renderMovies(allMovies.filter(m=>(m.title||"").toLowerCase().includes(q)));
+}
+
+function focusSearch(){
+    document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active"));
+    document.getElementById("navSearch").classList.add("active");
+    document.getElementById("searchInput").focus();
+}
 
 async function openDetail(id){
-    const m=allMovies.find(x=>x._id===id);if(!m)return;currentMovie=m;
+    const m=allMovies.find(x=>x._id===id);
+    if(!m)return;
+    currentMovie=m;
     document.getElementById("detailTitle").innerText=m.title;
-    document.getElementById("detailPoster").src="https://api.telegram.org/file/bot"+(TOKEN||"")+"/"+m.photo_id;
+    // 🔧 poster_url সরাসরি ব্যবহার!
+    document.getElementById("detailPoster").src=m.poster_url||"";
     document.getElementById("detailMeta").innerHTML='<span><i class="fa-solid fa-eye"></i> '+(m.clicks||0)+' views</span><span>18+</span>';
     const ads=adultDirectLinks;
     document.getElementById("detailAds").innerHTML=ads.map(l=>'<a class="detail-ad-link" href="'+l+'" target="_blank">'+l+'</a>').join("");
@@ -825,29 +921,49 @@ async function openDetail(id){
     try{await fetch("/api/movie/click/"+id,{method:"POST"})}catch(e){}
 }
 
-function closeDetail(){document.getElementById("detailPage").style.display="none";document.getElementById("mainApp").style.display="block";currentMovie=null}
+function closeDetail(){
+    document.getElementById("detailPage").style.display="none";
+    document.getElementById("mainApp").style.display="block";
+    currentMovie=null;
+}
 
 async function handleDownload(){
-    if(!currentMovie)return;clickCount++;const btn=document.getElementById("detailDownloadBtn");
+    if(!currentMovie)return;
+    clickCount++;
+    const btn=document.getElementById("detailDownloadBtn");
     if(clickCount===1){
         btn.innerHTML='<i class="fa-solid fa-arrow-up-right-from-square"></i> Open Ad First';
         btn.style.background="linear-gradient(135deg,#f59e0b,#d97706)";
         if(adultDirectLinks.length>0)window.open(adultDirectLinks[0],"_blank");
     }else{
-        btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i> Preparing...';btn.style.pointerEvents="none";
+        btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i> Preparing...';
+        btn.style.pointerEvents="none";
         try{
             const r=await fetch("/api/movie/unlock/"+currentMovie._id,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({user_id:userId})});
             const d=await r.json();
-            if(d.file_url){window.open(d.file_url,"_blank");btn.innerHTML='<i class="fa-solid fa-check"></i> Opened!';btn.style.background="linear-gradient(135deg,#10b981,#059669)"}
-            else{btn.innerHTML='<i class="fa-solid fa-triangle-exclamation"></i> '+(d.error||"Retry");btn.style.background="linear-gradient(135deg,#ef4444,#dc2626)";btn.style.pointerEvents="auto";clickCount=0}
-        }catch(e){btn.innerHTML='<i class="fa-solid fa-triangle-exclamation"></i> Error';btn.style.background="linear-gradient(135deg,#ef4444,#dc2626)";btn.style.pointerEvents="auto";clickCount=0}
+            if(d.file_url){
+                window.open(d.file_url,"_blank");
+                btn.innerHTML='<i class="fa-solid fa-check"></i> Opened!';
+                btn.style.background="linear-gradient(135deg,#10b981,#059669)";
+            }else{
+                btn.innerHTML='<i class="fa-solid fa-triangle-exclamation"></i> '+(d.error||"Retry");
+                btn.style.background="linear-gradient(135deg,#ef4444,#dc2626)";
+                btn.style.pointerEvents="auto";
+                clickCount=0;
+            }
+        }catch(e){
+            btn.innerHTML='<i class="fa-solid fa-triangle-exclamation"></i> Error';
+            btn.style.background="linear-gradient(135deg,#ef4444,#dc2626)";
+            btn.style.pointerEvents="auto";
+            clickCount=0;
+        }
     }
 }
 </script></body></html>'''
     return HTMLResponse(html_code)
 
 # ==========================================
-# 14. API Endpoints
+# 16. API Endpoints
 # ==========================================
 @app.post("/api/user/init")
 async def init_user(request: Request):
@@ -890,16 +1006,22 @@ async def unlock_movie(movie_id: str, request: Request):
         movie = await db.movies.find_one({"_id": ObjectId(movie_id)})
         if not movie:
             return {"error": "Not found"}
+        
+        # 🔧 video_url আগে থেকে থাকলে সরাসরি দাও, না হলে রেজল্ভ করো
+        video_url = movie.get("video_url", "")
+        if not video_url:
+            video_url = await get_file_url(movie["file_id"])
+        
         existing = await db.user_unlocks.find_one({"user_id": user_id, "movie_id": movie_id})
-        if existing:
-            return {"file_url": f"https://api.telegram.org/file/bot{TOKEN}/{movie['file_id']}"}
-        await db.user_unlocks.insert_one({"user_id": user_id, "movie_id": movie_id, "unlocked_at": datetime.datetime.utcnow()})
-        return {"file_url": f"https://api.telegram.org/file/bot{TOKEN}/{movie['file_id']}"}
+        if not existing:
+            await db.user_unlocks.insert_one({"user_id": user_id, "movie_id": movie_id, "unlocked_at": datetime.datetime.utcnow()})
+        
+        return {"file_url": video_url}
     except Exception as e:
         return {"error": str(e)}
 
 # ==========================================
-# 15. Run
+# 17. Run
 # ==========================================
 if __name__ == "__main__":
     print("🚀 Starting BD Viral Box...")
