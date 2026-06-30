@@ -4,11 +4,3 @@ uvicorn
 motor
 apscheduler
 aiohttp
-pyrogram
-tgcrypto
-Pillow
-cachetools
-google-generativeai
-pytz
-rapidfuzz
-httpx
