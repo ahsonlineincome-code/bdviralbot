@@ -22,16 +22,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.exceptions import TelegramRetryAfter
-# ✅ FIX 1: Added Command import
 from aiogram.filters import Command
-# ✅ FIX 2: Added FSInputFile import
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 from pydantic import BaseModel
-# ✅ FIX 3: Lazy import - don't import at top level
-# from pyrogram import Client as PyroClient  
-from assistant.ai_reply import get_smart_reply
 
 # ==========================================
 # 0. Logging Setup
@@ -58,14 +53,13 @@ CHANNEL_LINK = "https://t.me/addlist/MwbWNafSFK4yZjhl"
 REQUEST_LINK = "https://t.me/+nmWxIcRtkrg5Y2Vl"
 
 _db_ch = os.getenv("DB_CHANNEL_ID", "")
-DB_CHANNEL_ID = int(_db_ch) if _db_ch.lstrip('-').isdigit() else None
+DB_CHANNEL_ID = int(_db_ch) if _db_ch and _db_ch.lstrip('-').isdigit() else None
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 app = FastAPI()
 security = HTTPBasic()
 
-# ✅ FIX 4: Initialize as None first - will be set in startup
 pyro_app = None
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -103,7 +97,6 @@ class AdminStates(StatesGroup):
     waiting_for_series_search = State()
     waiting_for_episode_quality = State()
 
-# 🛑 FAST THUMBNAIL GENERATOR
 async def generate_fast_thumbnail(video_path, output_path):
     try:
         cmd = f'ffmpeg -ss 10 -i "{video_path}" -vframes 1 -vf "scale=640:360:force_original_aspect_ratio=increase,crop=640:360" -q:v 2 "{output_path}"'
@@ -118,7 +111,6 @@ async def generate_fast_thumbnail(video_path, output_path):
         logger.error(f"Fast Thumbnail error: {e}")
         return False
 
-# 🛑 HELPER: POST TO MAIN & LOG CHANNEL
 async def post_to_channels(photo_id, caption, markup):
     if CHANNEL_ID:
         try: 
@@ -149,7 +141,6 @@ async def video_queue_worker():
                 admin_id = chat_id
                 status_msg = await bot.send_message(admin_id, "⏳ <b>Processing Video...</b> (Downloading)")
                 
-                # ✅ FIX 5: Check if pyro_app is available
                 if pyro_app is None:
                     await bot.edit_message_text("❌ Pyrogram not initialized!", chat_id=admin_id, message_id=status_msg.message_id)
                     continue
@@ -267,9 +258,6 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect Info", headers={"WWW-Authenticate": "Basic"})
     return True
 
-# ==========================================
-# 🛑 10 SEC AD SYSTEM + START COMMAND
-# ==========================================
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     uid = message.from_user.id
@@ -302,12 +290,12 @@ async def start_cmd(message: types.Message, state: FSMContext):
 
     now = datetime.datetime.utcnow()
     user = None
-    if db:
+    if db is not None:
         user = await db.users.find_one({"user_id": uid})
     
-    if not user and db:
+    if not user and db is not None:
         await db.users.insert_one({"user_id": uid, "first_name": message.from_user.first_name, "joined_at": now, "last_active": now})
-    elif db:
+    elif db is not None:
         await db.users.update_one({"user_id": uid}, {"$set": {"last_active": now}})
     
     kb = [[types.InlineKeyboardButton(text="🎬 Watch Now", web_app=types.WebAppInfo(url=APP_URL))]]
@@ -328,7 +316,7 @@ async def noop_ad_cb(c: types.CallbackQuery):
 async def get_file_cb(c: types.CallbackQuery):
     movie_id = c.data.split("_")[2]
     try:
-        if not db:
+        if db is None:
             return await c.answer("Database error!", show_alert=True)
             
         movie = await db.movies.find_one({"_id": ObjectId(movie_id)})
@@ -349,14 +337,11 @@ async def get_file_cb(c: types.CallbackQuery):
         logger.error(f"Get file error: {e}")
         await c.answer(f"এরর: {str(e)}", show_alert=True)
 
-# ==========================================
-# ADMIN COMMANDS
-# ==========================================
 @dp.message(Command("stats"))
 async def stats_cmd(m: types.Message):
     if m.from_user.id not in admin_cache: 
         return
-    if not db:
+    if db is None:
         return await m.answer("❌ Database not connected!", parse_mode="HTML")
         
     uc = await db.users.count_documents({})
@@ -367,7 +352,7 @@ async def stats_cmd(m: types.Message):
 async def toggle_auto_upload(m: types.Message):
     if m.from_user.id not in admin_cache: 
         return
-    if not db:
+    if db is None:
         return await m.answer("❌ Database not connected!", parse_mode="HTML")
         
     try:
@@ -389,7 +374,7 @@ async def toggle_auto_upload(m: types.Message):
 async def del_movie_cmd(m: types.Message):
     if m.from_user.id not in admin_cache: 
         return
-    if not db:
+    if db is None:
         return await m.answer("❌ Database not connected!", parse_mode="HTML")
         
     try:
@@ -418,7 +403,7 @@ async def broadcast_prep(m: types.Message, state: FSMContext):
 @dp.message(AdminStates.waiting_for_bcast)
 async def execute_broadcast(m: types.Message, state: FSMContext):
     await state.clear()
-    if not db:
+    if db is None:
         return await m.answer("❌ Database not connected!", parse_mode="HTML")
         
     await m.answer("⏳ ব্রডকাস্ট শুরু হয়েছে...")
@@ -440,14 +425,11 @@ async def execute_broadcast(m: types.Message, state: FSMContext):
             
     await m.answer(f"✅ সম্পন্ন!\n✅ সফল: <b>{success}</b>\n❌ ব্যর্থ: <b>{failed}</b>", parse_mode="HTML")
 
-# ==========================================
-# 🛑 MANUAL UPLOAD
-# ==========================================
 @dp.message(F.content_type.in_({'video', 'document'}))
 async def receive_movie_file(m: types.Message, state: FSMContext):
     if m.from_user.id not in admin_cache: 
         return
-    if not db:
+    if db is None:
         return await m.answer("❌ Database not connected!", parse_mode="HTML")
         
     config = await db.settings.find_one({"id": "auto_upload_mode"})
@@ -473,7 +455,6 @@ async def receive_movie_file(m: types.Message, state: FSMContext):
         db_photo_id = None
 
         try:
-            # ✅ FIX 6: Check pyro_app before using
             if pyro_app is None:
                 raise Exception("Pyrogram not initialized")
                 
@@ -537,7 +518,7 @@ async def receive_movie_quality(m: types.Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
     
-    if not db:
+    if db is None:
         return await m.answer("❌ Database not connected!", parse_mode="HTML")
         
     title = data["title"]
@@ -585,9 +566,6 @@ async def send_reply(m: types.Message, state: FSMContext):
         logger.error(f"Send reply error: {e}")
         await m.answer("⚠️ রিপ্লাই পাঠানো যায়নি!")
 
-# ==========================================
-# WEB APP & APIS
-# ==========================================
 @app.get("/api/thumb/{file_id}")
 async def get_thumbnail(file_id: str):
     try:
@@ -603,7 +581,7 @@ async def get_thumbnail(file_id: str):
 
 @app.get("/api/movies/search")
 async def search_movies(q: str = "", page: int = 1):
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database not connected")
         
     limit = 15
@@ -766,14 +744,13 @@ async def web_app():
 </body>
 </html>""")
 
-# ==========================================
-# STARTUP & SHUTDOWN EVENT
-# ==========================================
 @app.on_event("startup")
 async def startup_event():
     global db, video_queue, pyro_app
     
-    # ✅ FIX 7: DATABASE CONNECTED INSIDE STARTUP
+    logger.info("🚀 Starting application...")
+    
+    # ✅ FIX: Database connection with proper error handling
     try:
         db_client = AsyncIOMotorClient(MONGO_URL)
         db = db_client['movie_database']
@@ -782,7 +759,7 @@ async def startup_event():
         logger.error(f"❌ Database connection failed: {e}")
         db = None
     
-    # ✅ FIX 8: PYROGRAM INITIALIZED INSIDE STARTUP (FIXES EVENT LOOP ERROR!)
+    # ✅ FIX: Pyrogram initialization inside event loop
     try:
         from pyrogram import Client as PyroClient
         
@@ -813,7 +790,8 @@ async def startup_event():
     
     video_queue = asyncio.Queue()
     
-    if db:
+    # ✅ FIX: Use 'is not None' for all database checks
+    if db is not None:
         await init_db()
         await load_admins()
         await load_banned_users()
@@ -823,7 +801,7 @@ async def startup_event():
     asyncio.create_task(dp.start_polling(bot))
     asyncio.create_task(video_queue_worker())
     
-    logger.info("🚀 Bot started successfully!")
+    logger.info("🎉 Application started successfully!")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -836,7 +814,6 @@ async def shutdown_event():
         await bot.session.close()
     except:
         pass
-    # ✅ FIX 9: Clean up pyro_app
     if pyro_app:
         try:
             await pyro_app.stop()
