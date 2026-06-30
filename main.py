@@ -49,7 +49,7 @@ LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "") # 🛑 NEW: Log Channel Added
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123") 
 BOT_USERNAME = "@bdviralboxx_bot"
 
-CHANNEL_LINK = "https://t.me/SakibMovieBox"
+ALL CHANNEL_LINK = "https://t.me/addlist/MwbWNafSFK4yZjhl"
 REQUEST_LINK = "https://t.me/+nmWxIcRtkrg5Y2Vl"
 
 _db_ch = os.getenv("DB_CHANNEL_ID", "")
