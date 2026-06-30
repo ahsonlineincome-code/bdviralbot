@@ -22,6 +22,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.exceptions import TelegramRetryAfter
+# ✅ FIX 1: Added Command import
+from aiogram.filters import Command
+# ✅ FIX 2: Added FSInputFile import
+from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 from pydantic import BaseModel
@@ -77,6 +81,8 @@ auto_reply_cache = {}
 keyword_replies_cache = {}
 
 async def load_keyword_replies():
+    if db is None:
+        return
     keyword_replies_cache.clear()
     async for kw in db.keyword_replies.find():
         keyword_replies_cache[kw["keyword"]] = kw["reply_message"]
@@ -115,91 +121,118 @@ async def generate_fast_thumbnail(video_path, output_path):
 async def post_to_channels(photo_id, caption, markup):
     if CHANNEL_ID:
         try: await bot.send_photo(chat_id=CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=markup)
-        except Exception: pass
+        except Exception as e: logger.error(f"Channel post error: {e}")
     if LOG_CHANNEL_ID:
         try: await bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=markup)
-        except Exception: pass
+        except Exception as e: logger.error(f"Log channel post error: {e}")
 
 async def video_queue_worker():
-    global is_processing, video_queue
+    global is_processing
     while True:
-        chat_id, message_id, aiogram_file_id, file_type = await video_queue.get()
-        is_processing = True
-        downloaded_file = None
-        thumb_path = None
         try:
-            admin_id = chat_id
-            status_msg = await bot.send_message(admin_id, "⏳ <b>Processing Video...</b> (Downloading)")
-            pyro_msg = await pyro_app.get_messages(chat_id, message_id)
+            chat_id, message_id, aiogram_file_id, file_type = await video_queue.get()
+            is_processing = True
+            downloaded_file = None
+            thumb_path = None
+            status_msg = None
             
-            total_vids = await db.movies.count_documents({})
-            serial_no = total_vids + 1
-            
-            viral_titles = ["New Viral Trending Clip", "Leaked Private Video", "Desi Viral Collection", "Exclusive Private Clip", "Hot Leaked Collection", "Bhabhi Viral Video Clip"]
-            auto_title = f"{random.choice(viral_titles)} #{serial_no:04d}"
-            
-            video_name = f"temp_video_{serial_no}_{int(time.time())}.mp4"
-            thumb_path = os.path.abspath(f"fast_thumb_{serial_no}_{int(time.time())}.jpg")
-            
-            downloaded_file = await pyro_app.download_media(pyro_msg, file_name=video_name)
-            if not downloaded_file:
-                await bot.edit_message_text("❌ ফাইল ডাউনলোড করতে সমস্যা হয়েছে।", chat_id=admin_id, message_id=status_msg.message_id)
-                continue
+            try:
+                admin_id = chat_id
+                status_msg = await bot.send_message(admin_id, "⏳ <b>Processing Video...</b> (Downloading)")
+                pyro_msg = await pyro_app.get_messages(chat_id, message_id)
                 
-            await bot.edit_message_text("📸 <b>Generating Thumbnail...</b>", chat_id=admin_id, message_id=status_msg.message_id)
-            await generate_fast_thumbnail(downloaded_file, thumb_path)
+                total_vids = await db.movies.count_documents({})
+                serial_no = total_vids + 1
                 
-            db_file_id = None
-            db_photo_id = None
-            photo_id = None
-            
-            if DB_CHANNEL_ID and os.path.exists(thumb_path):
-                try:
-                    copied_vid = await bot.copy_message(chat_id=DB_CHANNEL_ID, from_chat_id=chat_id, message_id=message_id)
-                    db_file_id = copied_vid.message_id
-                    copied_photo = await bot.send_photo(DB_CHANNEL_ID, FSInputFile(thumb_path))
-                    db_photo_id = copied_photo.message_id
-                    photo_id = copied_photo.photo[-1].file_id
-                except Exception: pass
-            
-            if os.path.exists(thumb_path):
-                photo_msg = await bot.send_photo(admin_id, photo=FSInputFile(thumb_path), caption=f"✅ <b>{auto_title}</b> Successfully Uploaded!")
-                if not photo_id: photo_id = photo_msg.photo[-1].file_id
-            
-            await db.movies.insert_one({
-                "title": auto_title, "quality": "HD", "photo_id": photo_id, 
-                "file_id": aiogram_file_id, "file_type": file_type,
-                "db_file_id": db_file_id, "db_photo_id": db_photo_id,
-                "clicks": 0, "created_at": datetime.datetime.utcnow()
-            })
-            clear_app_cache() 
-            await bot.delete_message(chat_id=admin_id, message_id=status_msg.message_id)
+                viral_titles = ["New Viral Trending Clip", "Leaked Private Video", "Desi Viral Collection", "Exclusive Private Clip", "Hot Leaked Collection", "Bhabhi Viral Video Clip"]
+                auto_title = f"{random.choice(viral_titles)} #{serial_no:04d}"
+                
+                video_name = f"temp_video_{serial_no}_{int(time.time())}.mp4"
+                thumb_path = os.path.abspath(f"fast_thumb_{serial_no}_{int(time.time())}.jpg")
+                
+                downloaded_file = await pyro_app.download_media(pyro_msg, file_name=video_name)
+                if not downloaded_file:
+                    await bot.edit_message_text("❌ ফাইল ডাউনলোড করতে সমস্যা হয়েছে।", chat_id=admin_id, message_id=status_msg.message_id)
+                    continue
+                    
+                await bot.edit_message_text("📸 <b>Generating Thumbnail...</b>", chat_id=admin_id, message_id=status_msg.message_id)
+                await generate_fast_thumbnail(downloaded_file, thumb_path)
+                    
+                db_file_id = None
+                db_photo_id = None
+                photo_id = None
+                
+                if DB_CHANNEL_ID and os.path.exists(thumb_path):
+                    try:
+                        copied_vid = await bot.copy_message(chat_id=DB_CHANNEL_ID, from_chat_id=chat_id, message_id=message_id)
+                        db_file_id = copied_vid.message_id
+                        # ✅ FIX 3: Use FSInputFile properly
+                        copied_photo = await bot.send_photo(DB_CHANNEL_ID, photo=FSInputFile(thumb_path))
+                        db_photo_id = copied_photo.message_id
+                        photo_id = copied_photo.photo[-1].file_id
+                    except Exception as e:
+                        logger.error(f"DB Channel upload error: {e}")
+                
+                if os.path.exists(thumb_path):
+                    # ✅ FIX 4: Use FSInputFile properly
+                    photo_msg = await bot.send_photo(admin_id, photo=FSInputFile(thumb_path), caption=f"✅ <b>{auto_title}</b> Successfully Uploaded!")
+                    if not photo_id: photo_id = photo_msg.photo[-1].file_id
+                
+                await db.movies.insert_one({
+                    "title": auto_title, "quality": "HD", "photo_id": photo_id, 
+                    "file_id": aiogram_file_id, "file_type": file_type,
+                    "db_file_id": db_file_id, "db_photo_id": db_photo_id,
+                    "clicks": 0, "created_at": datetime.datetime.utcnow()
+                })
+                clear_app_cache() 
+                
+                if status_msg:
+                    await bot.delete_message(chat_id=admin_id, message_id=status_msg.message_id)
 
-            if photo_id:
-                bot_info = await bot.get_me()
-                kb = [ [types.InlineKeyboardButton(text="📥 Download & Watch 🎬", url=f"https://t.me/{bot_info.username}?start=new")] ]
-                markup = types.InlineKeyboardMarkup(inline_keyboard=kb)
-                caption = f"🔥 <b>নতুন এক্সক্লুসিভ ভাইরাল ভিডিও!</b>\n\n📌 <b>টাইটেল:</b> {auto_title}\n🏷 <b>কোয়ালিটি:</b> HD\n\n👇 <i>বট থেকে ভিডিওটি পেতে নিচের বাটনে ক্লিক করুন।</i>"
-                await post_to_channels(photo_id, caption, markup)
-                
+                if photo_id:
+                    bot_info = await bot.get_me()
+                    kb = [[types.InlineKeyboardButton(text="📥 Download & Watch 🎬", url=f"https://t.me/{bot_info.username}?start=new")]]
+                    markup = types.InlineKeyboardMarkup(inline_keyboard=kb)
+                    caption = f"🔥 <b>নতুন এক্সক্লুসিভ ভাইরাল ভিডিও!</b>\n\n📌 <b>টাইটেল:</b> {auto_title}\n🏷 <b>কোয়ালিটি:</b> HD\n\n👇 <i>বট থেকে ভিডিওটি পেতে নিচের বাটনে ক্লিক করুন।</i>"
+                    await post_to_channels(photo_id, caption, markup)
+                    
+            except Exception as e:
+                logger.error(f"Video processing error: {e}")
+                try:
+                    await bot.send_message(chat_id, f"⚠️ Error: {str(e)}")
+                except:
+                    pass
+            finally:
+                if downloaded_file and os.path.exists(downloaded_file): 
+                    try: os.remove(downloaded_file)
+                    except: pass
+                if thumb_path and os.path.exists(thumb_path): 
+                    try: os.remove(thumb_path)
+                    except: pass
+                video_queue.task_done()
+                is_processing = False
         except Exception as e:
-            await bot.send_message(chat_id, f"⚠️ Error: {str(e)}")
-        finally:
-            if downloaded_file and os.path.exists(downloaded_file): os.remove(downloaded_file)
-            if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
-            video_queue.task_done()
+            logger.error(f"Queue worker error: {e}")
             is_processing = False
 
 async def load_admins():
+    if db is None:
+        return
     admin_cache.clear()
     admin_cache.add(OWNER_ID)
-    async for admin in db.admins.find(): admin_cache.add(admin["user_id"])
+    async for admin in db.admins.find(): 
+        admin_cache.add(admin["user_id"])
 
 async def load_banned_users():
+    if db is None:
+        return
     banned_cache.clear()
-    async for b_user in db.banned.find(): banned_cache.add(b_user["user_id"])
+    async for b_user in db.banned.find(): 
+        banned_cache.add(b_user["user_id"])
 
 async def init_db():
+    if db is None:
+        return
     await db.movies.create_index([("title", "text")])
     await db.movies.create_index("created_at")
 
@@ -216,7 +249,8 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     uid = message.from_user.id
-    if uid in banned_cache: return await message.answer("🚫 <b>আপনাকে ব্যান করা হয়েছে।</b>", parse_mode="HTML")
+    if uid in banned_cache: 
+        return await message.answer("🚫 <b>আপনাকে ব্যান করা হয়েছে।</b>", parse_mode="HTML")
     await state.clear()
     
     args = message.text.split(" ")
@@ -238,14 +272,18 @@ async def start_cmd(message: types.Message, state: FSMContext):
                     reply_markup=types.InlineKeyboardMarkup(inline_keyboard=new_kb), 
                     parse_mode="HTML"
                 )
-            except Exception: pass
+            except Exception: 
+                pass
             return
 
     now = datetime.datetime.utcnow()
-    user = await db.users.find_one({"user_id": uid})
-    if not user:
+    user = None
+    if db:
+        user = await db.users.find_one({"user_id": uid})
+    
+    if not user and db:
         await db.users.insert_one({"user_id": uid, "first_name": message.from_user.first_name, "joined_at": now, "last_active": now})
-    else:
+    elif db:
         await db.users.update_one({"user_id": uid}, {"$set": {"last_active": now}})
     
     kb = [[types.InlineKeyboardButton(text="🎬 Watch Now", web_app=types.WebAppInfo(url=APP_URL))]]
@@ -266,8 +304,12 @@ async def noop_ad_cb(c: types.CallbackQuery):
 async def get_file_cb(c: types.CallbackQuery):
     movie_id = c.data.split("_")[2]
     try:
+        if not db:
+            return await c.answer("Database error!", show_alert=True)
+            
         movie = await db.movies.find_one({"_id": ObjectId(movie_id)})
-        if not movie: return await c.answer("ফাইল পাওয়া যায়নি!", show_alert=True)
+        if not movie: 
+            return await c.answer("ফাইল পাওয়া যায়নি!", show_alert=True)
             
         file_id = movie.get("file_id")
         file_type = movie.get("file_type", "video")
@@ -280,6 +322,7 @@ async def get_file_cb(c: types.CallbackQuery):
             
         await c.message.delete()
     except Exception as e:
+        logger.error(f"Get file error: {e}")
         await c.answer(f"এরর: {str(e)}", show_alert=True)
 
 # ==========================================
@@ -287,44 +330,79 @@ async def get_file_cb(c: types.CallbackQuery):
 # ==========================================
 @dp.message(Command("stats"))
 async def stats_cmd(m: types.Message):
-    if m.from_user.id not in admin_cache: return
+    if m.from_user.id not in admin_cache: 
+        return
+    if not db:
+        return await m.answer("❌ Database not connected!", parse_mode="HTML")
+        
     uc = await db.users.count_documents({})
     mc = await db.movies.count_documents({})
     await m.answer(f"📊 <b>BD Viral Box স্ট্যাটাস:</b>\n\n👥 মোট ইউজার: <code>{uc}</code>\n🎬 মোট ফাইল: <code>{mc}</code>", parse_mode="HTML")
 
 @dp.message(Command("autoupload"))
 async def toggle_auto_upload(m: types.Message):
-    if m.from_user.id not in admin_cache: return
+    if m.from_user.id not in admin_cache: 
+        return
+    if not db:
+        return await m.answer("❌ Database not connected!", parse_mode="HTML")
+        
     try:
-        state = m.text.split(" ")[1].lower()
+        parts = m.text.split(" ")
+        if len(parts) < 2:
+            return await m.answer("❌ Usage: /autoupload on|off", parse_mode="HTML")
+            
+        state = parts[1].lower()
+        if state not in ["on", "off"]:
+            return await m.answer("❌ Usage: /autoupload on|off", parse_mode="HTML")
+            
         await db.settings.update_one({"id": "auto_upload_mode"}, {"$set": {"status": state == "on"}}, upsert=True)
-        await m.answer(f"✅ Auto Upload {'চালু' if state=='on' else 'বন্ধ'}।")
-    except: pass
+        await m.answer(f"✅ Auto Upload {'চালু' if state=='on' else 'বন্ধ'}।", parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Auto upload toggle error: {e}")
+        await m.answer("❌ Error occurred!", parse_mode="HTML")
 
 @dp.message(Command("delmovie"))
 async def del_movie_cmd(m: types.Message):
-    if m.from_user.id not in admin_cache: return
+    if m.from_user.id not in admin_cache: 
+        return
+    if not db:
+        return await m.answer("❌ Database not connected!", parse_mode="HTML")
+        
     try:
-        title = m.text.split(" ", 1)[1].strip()
+        parts = m.text.split(" ", 1)
+        if len(parts) < 2:
+            return await m.answer("❌ Usage: /delmovie movie_name", parse_mode="HTML")
+            
+        title = parts[1].strip()
         result = await db.movies.delete_many({"title": title})
         if result.deleted_count > 0:
             clear_app_cache()
             await m.answer(f"✅ {result.deleted_count} টি ফাইল ডিলিট হয়েছে!", parse_mode="HTML")
-    except: pass
+        else:
+            await m.answer("❕ কোনো ফাইল পাওয়া যায়নি!", parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Delete movie error: {e}")
+        await m.answer("❌ Error occurred!", parse_mode="HTML")
 
 @dp.message(Command("cast"))
 async def broadcast_prep(m: types.Message, state: FSMContext):
-    if m.from_user.id not in admin_cache: return
+    if m.from_user.id not in admin_cache: 
+        return
     await state.set_state(AdminStates.waiting_for_bcast)
     await m.answer("📢 ব্রডকাস্ট করতে চান এমন মেসেজটি পাঠান।")
 
 @dp.message(AdminStates.waiting_for_bcast)
 async def execute_broadcast(m: types.Message, state: FSMContext):
     await state.clear()
+    if not db:
+        return await m.answer("❌ Database not connected!", parse_mode="HTML")
+        
     await m.answer("⏳ ব্রডকাস্ট শুরু হয়েছে...")
     kb = [[types.InlineKeyboardButton(text="🎬 ওপেন BD Viral Box", web_app=types.WebAppInfo(url=APP_URL))]]
     markup = types.InlineKeyboardMarkup(inline_keyboard=kb)
     success = 0
+    failed = 0
+    
     async for u in db.users.find():
         try:
             await m.copy_to(chat_id=u['user_id'], reply_markup=markup)
@@ -332,16 +410,24 @@ async def execute_broadcast(m: types.Message, state: FSMContext):
             await asyncio.sleep(0.05)
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
-        except: pass
-    await m.answer(f"✅ সম্পন্ন! <b>{success}</b> জনকে পাঠানো হয়েছে।", parse_mode="HTML")
+            failed += 1
+        except Exception:
+            failed += 1
+            
+    await m.answer(f"✅ সম্পন্ন!\n✅ সফল: <b>{success}</b>\n❌ ব্যর্থ: <b>{failed}</b>", parse_mode="HTML")
 
 # ==========================================
 # 🛑 MANUAL UPLOAD
 # ==========================================
-@dp.message(F.content_type.in_({'video', 'document'}), lambda m: m.from_user.id in admin_cache)
+@dp.message(F.content_type.in_({'video', 'document'}))
 async def receive_movie_file(m: types.Message, state: FSMContext):
+    if m.from_user.id not in admin_cache: 
+        return
+    if not db:
+        return await m.answer("❌ Database not connected!", parse_mode="HTML")
+        
     config = await db.settings.find_one({"id": "auto_upload_mode"})
-    is_auto = config["status"] if config else False
+    is_auto = config.get("status", False) if config else False
     
     if is_auto:
         aiogram_fid = m.video.file_id if m.video else m.document.file_id
@@ -356,6 +442,8 @@ async def receive_movie_file(m: types.Message, state: FSMContext):
         downloaded_file = None
         thumb_path = f"fast_thumb_{int(time.time())}.jpg"
         photo_id = None
+        db_file_id = None
+        db_photo_id = None
 
         try:
             pyro_msg = await pyro_app.get_messages(m.chat.id, m.message_id)
@@ -367,40 +455,62 @@ async def receive_movie_file(m: types.Message, state: FSMContext):
             if DB_CHANNEL_ID and os.path.exists(thumb_path):
                 try:
                     copied = await bot.copy_message(chat_id=DB_CHANNEL_ID, from_chat_id=m.chat.id, message_id=m.message_id)
-                    copied_photo = await bot.send_photo(DB_CHANNEL_ID, FSInputFile(thumb_path))
+                    db_file_id = copied.message_id
+                    # ✅ FIX 5: Use FSInputFile properly
+                    copied_photo = await bot.send_photo(DB_CHANNEL_ID, photo=FSInputFile(thumb_path))
+                    db_photo_id = copied_photo.message_id
                     photo_id = copied_photo.photo[-1].file_id
-                except Exception: pass
+                except Exception as e:
+                    logger.error(f"Manual upload DB channel error: {e}")
             
             if os.path.exists(thumb_path) and not photo_id:
-                sent_photo = await m.answer_photo(FSInputFile(thumb_path))
+                # ✅ FIX 6: Use FSInputFile properly
+                sent_photo = await m.answer_photo(photo=FSInputFile(thumb_path))
                 photo_id = sent_photo.photo[-1].file_id
                 
             await m.answer("✅ থাম্বনেইল রেডি! এবার মুভির <b>টাইটেল (নাম)</b> লিখে পাঠান।", parse_mode="HTML")
-            await state.update_data(file_id=fid, file_type=ftype, db_file_id=None, photo_id=photo_id, db_photo_id=None)
+            await state.update_data(file_id=fid, file_type=ftype, db_file_id=db_file_id, photo_id=photo_id, db_photo_id=db_photo_id)
             await state.set_state(AdminStates.waiting_for_title)
             await bot.delete_message(m.chat.id, status_msg.message_id)
             
         except Exception as e:
+            logger.error(f"Manual upload error: {e}")
             await m.answer(f"✅ ফাইল পেয়েছি! এবার মুভির <b>টাইটেল (নাম)</b> লিখে পাঠান।", parse_mode="HTML")
             await state.update_data(file_id=fid, file_type=ftype, db_file_id=None, photo_id=None, db_photo_id=None)
             await state.set_state(AdminStates.waiting_for_title)
-            await bot.delete_message(m.chat.id, status_msg.message_id)
+            try:
+                await bot.delete_message(m.chat.id, status_msg.message_id)
+            except:
+                pass
         finally:
-            if downloaded_file and os.path.exists(downloaded_file): os.remove(downloaded_file)
-            if os.path.exists(thumb_path): os.remove(thumb_path)
+            if downloaded_file and os.path.exists(downloaded_file): 
+                try: os.remove(downloaded_file)
+                except: pass
+            if os.path.exists(thumb_path): 
+                try: os.remove(thumb_path)
+                except: pass
 
 @dp.message(AdminStates.waiting_for_title, F.text)
 async def receive_movie_title(m: types.Message, state: FSMContext):
+    if not m.text.strip():
+        return await m.answer("❌ টাইটেল খালি থাকতে পারবে না!", parse_mode="HTML")
+        
     await state.update_data(title=m.text.strip())
     await state.set_state(AdminStates.waiting_for_quality)
     await m.answer("✅ নাম সেভ হয়েছে! এবার ফাইলের <b>কোয়ালিটি</b> দিন (যেমন: 720p, 1080p).", parse_mode="HTML")
 
 @dp.message(AdminStates.waiting_for_quality, F.text)
 async def receive_movie_quality(m: types.Message, state: FSMContext):
+    if not m.text.strip():
+        return await m.answer("❌ কোয়ালিটি খালি থাকতে পারবে না!", parse_mode="HTML")
+        
     await state.update_data(quality=m.text.strip())
     data = await state.get_data()
     await state.clear()
     
+    if not db:
+        return await m.answer("❌ Database not connected!", parse_mode="HTML")
+        
     title = data["title"]
     photo_id = data.get("photo_id")
     quality = data["quality"]
@@ -415,15 +525,19 @@ async def receive_movie_quality(m: types.Message, state: FSMContext):
     await m.answer(f"🎉 <b>{title} [{quality}]</b> BD Viral Box এ যুক্ত হয়েছে!", parse_mode="HTML")
 
     if photo_id:
-        bot_info = await bot.get_me()
-        kb = [ [types.InlineKeyboardButton(text="📥 Download & Watch 🎬", url=f"https://t.me/{bot_info.username}?start=new")] ]
-        markup = types.InlineKeyboardMarkup(inline_keyboard=kb)
-        caption = f"🔥 <b>নতুন ফাইল যুক্ত হয়েছে!</b>\n\n📌 <b>টাইটেল:</b> {title}\n🏷 <b>কোয়ালিটি:</b> {quality}"
-        await post_to_channels(photo_id, caption, markup)
+        try:
+            bot_info = await bot.get_me()
+            kb = [ [types.InlineKeyboardButton(text="📥 Download & Watch 🎬", url=f"https://t.me/{bot_info.username}?start=new")] ]
+            markup = types.InlineKeyboardMarkup(inline_keyboard=kb)
+            caption = f"🔥 <b>নতুন ফাইল যুক্ত হয়েছে!</b>\n\n📌 <b>টাইটেল:</b> {title}\n🏷 <b>কোয়ালিটি:</b> {quality}"
+            await post_to_channels(photo_id, caption, markup)
+        except Exception as e:
+            logger.error(f"Post to channel error: {e}")
 
 @dp.callback_query(F.data.startswith("reply_"))
 async def process_reply_cb(c: types.CallbackQuery, state: FSMContext):
-    if c.from_user.id not in admin_cache: return
+    if c.from_user.id not in admin_cache: 
+        return
     user_id = int(c.data.split("_")[1])
     await state.set_state(AdminStates.waiting_for_reply)
     await state.update_data(target_uid=user_id)
@@ -435,9 +549,12 @@ async def send_reply(m: types.Message, state: FSMContext):
     target_uid = data.get("target_uid")
     await state.clear()
     try:
-        if m.text: await bot.send_message(target_uid, f"📩 <b>অ্যাডমিন রিপ্লাই:</b>\n\n{m.text}", parse_mode="HTML")
+        if m.text: 
+            await bot.send_message(target_uid, f"📩 <b>অ্যাডমিন রিপ্লাই:</b>\n\n{m.text}", parse_mode="HTML")
         await m.answer("✅ রিপ্লাই পাঠানো হয়েছে!")
-    except: await m.answer("⚠️ রিপ্লাই পাঠানো যায়নি!")
+    except Exception as e:
+        logger.error(f"Send reply error: {e}")
+        await m.answer("⚠️ রিপ্লাই পাঠানো যায়নি!")
 
 # ==========================================
 # WEB APP & APIS
@@ -446,31 +563,43 @@ async def send_reply(m: types.Message, state: FSMContext):
 async def get_thumbnail(file_id: str):
     try:
         file = await bot.get_file(file_id)
-        if not file.file_path: raise HTTPException(404)
+        if not file.file_path: 
+            raise HTTPException(status_code=404, detail="File not found")
         return RedirectResponse(url=f"https://api.telegram.org/file/bot{TOKEN}/{file.file_path}")
-    except Exception:
-        raise HTTPException(404)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Thumbnail error: {e}")
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
 
 @app.get("/api/movies/search")
 async def search_movies(q: str = "", page: int = 1):
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not connected")
+        
     limit = 15
     skip = (page - 1) * limit
     query = {"title": {"$regex": q, "$options": "i"}} if q else {}
     
-    movies = await db.movies.find(query).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
-    total = await db.movies.count_documents(query)
-    
-    result = []
-    for m in movies:
-        result.append({
-            "id": str(m["_id"]),
-            "title": m.get("title", "Unknown"),
-            "quality": m.get("quality", "HD"),
-            "photo_id": m.get("photo_id", ""),
-            "clicks": m.get("clicks", 0)
-        })
+    try:
+        movies_cursor = db.movies.find(query).sort("created_at", -1).skip(skip).limit(limit)
+        movies = await movies_cursor.to_list(length=limit)
+        total = await db.movies.count_documents(query)
         
-    return {"results": result, "total": total, "pages": (total + limit - 1) // limit}
+        result = []
+        for m in movies:
+            result.append({
+                "id": str(m["_id"]),
+                "title": m.get("title", "Unknown"),
+                "quality": m.get("quality", "HD"),
+                "photo_id": m.get("photo_id", ""),
+                "clicks": m.get("clicks", 0)
+            })
+            
+        return {"results": result, "total": total, "pages": (total + limit - 1) // limit}
+    except Exception as e:
+        logger.error(f"Search movies error: {e}")
+        raise HTTPException(status_code=500, detail="Search failed")
 
 @app.get("/")
 async def web_app():
@@ -501,6 +630,7 @@ async def web_app():
         .page-btn { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
         .page-btn:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
         #pageInfo { font-weight: bold; color: #94a3b8; }
+        .loading { text-align: center; padding: 20px; color: #94a3b8; }
     </style>
 </head>
 <body>
@@ -528,6 +658,7 @@ async def web_app():
         let currentPage = 1;
         let totalPages = 1;
         let searchTimeout;
+        let isLoading = false;
 
         function goHome() {
             document.getElementById('searchInput').value = '';
@@ -552,13 +683,16 @@ async def web_app():
         }
 
         function loadMovies() {
+            if (isLoading) return;
+            isLoading = true;
+            
             const q = document.getElementById('searchInput').value;
-            document.getElementById('movieGrid').innerHTML = '<div style="text-align:center;width:100%;padding:20px;">Loading...</div>';
+            const grid = document.getElementById('movieGrid');
+            grid.innerHTML = '<div class="loading">Loading...</div>';
             
             fetch(`/api/movies/search?q=${encodeURIComponent(q)}&page=${currentPage}`)
                 .then(res => res.json())
                 .then(data => {
-                    const grid = document.getElementById('movieGrid');
                     grid.innerHTML = '';
                     totalPages = data.pages || 1;
                     
@@ -568,6 +702,7 @@ async def web_app():
 
                     if (data.results.length === 0) {
                         grid.innerHTML = '<div style="text-align:center;width:100%;padding:40px;color:#94a3b8;">কোনো মুভি পাওয়া যায়নি।</div>';
+                        isLoading = false;
                         return;
                     }
 
@@ -576,7 +711,7 @@ async def web_app():
                         card.className = 'card';
                         card.onclick = () => openMovie(m.id);
                         card.innerHTML = `
-                            <img src="/api/thumb/${m.photo_id}" onerror="this.src='https://via.placeholder.com/150x200/1e293b/ffffff?text=No+Img'">
+                            <img src="/api/thumb/${m.photo_id}" onerror="this.src='https://via.placeholder.com/150x200/1e293b/ffffff?text=No+Img'" loading="lazy">
                             <div class="info">
                                 <div class="title">${m.title}</div>
                                 <div class="quality">${m.quality}</div>
@@ -584,6 +719,12 @@ async def web_app():
                         `;
                         grid.appendChild(card);
                     });
+                    isLoading = false;
+                })
+                .catch(err => {
+                    console.error('Load error:', err);
+                    grid.innerHTML = '<div style="text-align:center;width:100%;padding:40px;color:#ef4444;">Error loading movies!</div>';
+                    isLoading = false;
                 });
         }
 
@@ -604,14 +745,21 @@ async def startup_event():
     global db, video_queue
     
     # 🛑 FIX: DATABASE CONNECTED INSIDE STARTUP
-    db_client = AsyncIOMotorClient(MONGO_URL)
-    db = db_client['movie_database']
+    try:
+        db_client = AsyncIOMotorClient(MONGO_URL)
+        db = db_client['movie_database']
+        logger.info("✅ Database connected successfully!")
+    except Exception as e:
+        logger.error(f"❌ Database connection failed: {e}")
+        db = None
     
     video_queue = asyncio.Queue()
-    await init_db()
-    await load_admins()
-    await load_banned_users()
-    await load_keyword_replies()
+    
+    if db:
+        await init_db()
+        await load_admins()
+        await load_banned_users()
+        await load_keyword_replies()
     
     # 🛑 NO PYRO APP START NEEDED! IT WORKS WITHOUT STARTING.
     
@@ -620,8 +768,14 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await dp.stop_polling()
-    await bot.session.close()
+    try:
+        await dp.stop_polling()
+    except:
+        pass
+    try:
+        await bot.session.close()
+    except:
+        pass
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
