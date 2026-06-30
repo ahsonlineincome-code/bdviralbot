@@ -60,6 +60,7 @@ dp = Dispatcher(storage=MemoryStorage())
 app = FastAPI()
 security = HTTPBasic()
 
+# 🛑 PYRO CLIENT WITHOUT STARTING (FIXES EVENT LOOP CRASH)
 if SESSION_STRING:
     pyro_app = PyroClient("user_session", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING, in_memory=True, no_updates=True)
 else:
@@ -67,7 +68,6 @@ else:
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# 🛑 FIX: DATABASE INITIALLY SET TO NONE (Will connect in startup to avoid Event Loop Error)
 db = None 
 admin_cache = set([OWNER_ID]) 
 banned_cache = set() 
@@ -221,7 +221,6 @@ async def start_cmd(message: types.Message, state: FSMContext):
     
     args = message.text.split(" ")
     if len(args) > 1:
-        # AD SYSTEM TRIGGER
         if args[1].startswith("play_"):
             movie_id = args[1].split("_")[1]
             kb = [[types.InlineKeyboardButton(text="⏳ অপেক্ষা করুন... (১০ সেকেন্ড)", callback_data="noop_ad")]]
@@ -230,7 +229,7 @@ async def start_cmd(message: types.Message, state: FSMContext):
                 reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), 
                 parse_mode="HTML"
             )
-            await asyncio.sleep(10) # 10 Seconds Wait
+            await asyncio.sleep(10)
             
             new_kb = [[types.InlineKeyboardButton(text="📥 এখন ডাউনলোড করুন", callback_data=f"get_file_{movie_id}")]]
             try:
@@ -259,7 +258,6 @@ async def start_cmd(message: types.Message, state: FSMContext):
         
     await message.answer(text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
 
-# AD SYSTEM CALLBACKS
 @dp.callback_query(F.data == "noop_ad")
 async def noop_ad_cb(c: types.CallbackQuery):
     await c.answer("⚠️ দয়া করে ১০ সেকেন্ড অপেক্ষা করুন! এড দেখতে হবে।", show_alert=True)
@@ -338,7 +336,7 @@ async def execute_broadcast(m: types.Message, state: FSMContext):
     await m.answer(f"✅ সম্পন্ন! <b>{success}</b> জনকে পাঠানো হয়েছে।", parse_mode="HTML")
 
 # ==========================================
-# 🛑 MANUAL UPLOAD (NO PHOTO NEEDED, AUTO THUMB)
+# 🛑 MANUAL UPLOAD
 # ==========================================
 @dp.message(F.content_type.in_({'video', 'document'}), lambda m: m.from_user.id in admin_cache)
 async def receive_movie_file(m: types.Message, state: FSMContext):
@@ -599,13 +597,13 @@ async def web_app():
 </html>""")
 
 # ==========================================
-# STARTUP & SHUTDOWN EVENT (PYRO START FIX)
+# STARTUP & SHUTDOWN EVENT
 # ==========================================
 @app.on_event("startup")
 async def startup_event():
     global db, video_queue
     
-    # 🛑 FIX: CONNECTING DATABASE HERE SOLVES THE EVENT LOOP ERROR
+    # 🛑 FIX: DATABASE CONNECTED INSIDE STARTUP
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client['movie_database']
     
@@ -615,15 +613,13 @@ async def startup_event():
     await load_banned_users()
     await load_keyword_replies()
     
-    # 🛑 PYROCLIENT START (FIXES: Client has not been started yet)
-    await pyro_app.start()
+    # 🛑 NO PYRO APP START NEEDED! IT WORKS WITHOUT STARTING.
     
     asyncio.create_task(dp.start_polling(bot))
     asyncio.create_task(video_queue_worker())
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await pyro_app.stop()
     await dp.stop_polling()
     await bot.session.close()
 
