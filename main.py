@@ -485,7 +485,7 @@ async def action_new_broadcast(c: types.CallbackQuery, state: FSMContext):
     if LOG_CHANNEL_ID:
         try:
             log_kb = [
-                [types.InlineKeyboardButton(text="🎬 Watch Now", url="https://t.me/MovieeBoxx_Bot?start=new")],
+                [types.InlineKeyboardButton(text="🎬 Watch Now", url="https://t.me/bdviralboxx_bot?start=new")],
                 [types.InlineKeyboardButton(text="📥 ডাউনলোড কিভাবে করবেন", url="https://t.me/SakibMovieBox/62")],
                 [types.InlineKeyboardButton(text="📝 Request Movie", url="https://t.me/requestmoviebox")]
             ]
