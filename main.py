@@ -48,7 +48,7 @@ CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003904328439")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123") 
 BOT_USERNAME = "@bdviralboxx_bot" 
 
-LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "-1003708048942")
+LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "-1003497700295")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -68,8 +68,6 @@ db = client['movie_database']
 
 admin_cache = set([OWNER_ID]) 
 banned_cache = set() 
-
-CATEGORIES = ["Bangla", "Bangla Dubbed", "Hindi Dubbed", "Hollywood", "K-Drama", "Anime", "Horror", "Web Series", "Adult Content"]
 
 # কিউ সিস্টেম যোগ করা হলো (একসাথে একাধিক ব্রডকাস্ট রান করে বট যেন হ্যাং না করে)
 broadcast_queue = asyncio.Queue()
@@ -179,7 +177,7 @@ async def broadcast_queue_worker():
         try:
             # কিউ থেকে ডেটা নিবে (আগের ব্রডকাস্ট শেষ না হলে এখানে অপেক্ষা করবে)
             task_data = await broadcast_queue.get()
-            await run_movie_broadcast(task_data['data'], task_data['selected_cats'], task_data['admin_id'])
+            await run_movie_broadcast(task_data['data'], task_data['admin_id'])
             broadcast_queue.task_done()
         except Exception as e:
             print(f"Queue Worker Error: {e}")
@@ -429,7 +427,7 @@ async def receive_movie_file(m: types.Message, state: FSMContext):
     fid = m.video.file_id if m.video else m.document.file_id
     ftype = "video" if m.video else "document"
     await state.set_state(AdminStates.waiting_for_photo)
-    await state.update_data(file_id=fid, file_type=ftype, categories=[])
+    await state.update_data(file_id=fid, file_type=ftype)
     await m.answer("✅ ফাইল পেয়েছি! এবার <b>পোস্টার</b> পাঠান।", parse_mode="HTML")
 
 @dp.message(AdminStates.waiting_for_photo, F.photo)
@@ -455,77 +453,34 @@ async def fallback_title(m: types.Message):
 @dp.message(AdminStates.waiting_for_quality, F.text)
 async def receive_movie_quality(m: types.Message, state: FSMContext):
     await state.update_data(quality=m.text.strip())
-    await state.set_state(AdminStates.waiting_for_year)
-    await m.answer("✅ এবার <b>রিলিজ সাল</b> লিখুন।", parse_mode="HTML")
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🚀 New Movie (Broadcast & Log)", callback_data="action_new_bcast")
+    builder.button(text="➕ Add File Only (No Broadcast)", callback_data="action_add_file")
+    builder.adjust(1)
+    await m.answer(
+        "✅ সব তথ্য নেওয়া হয়েছে!\n\n👇 এখন আপনি কি করতে চান তা নিচের যেকোনো একটি বাটনে ক্লিক করে নির্বাচন করুন:",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
 
 @dp.message(AdminStates.waiting_for_quality)
 async def fallback_quality(m: types.Message):
     await m.answer("⚠️ দয়া করে <b>কোয়ালিটি (টেক্সট)</b> লিখুন। অথবা /cancel লিখুন।", parse_mode="HTML")
 
-@dp.message(AdminStates.waiting_for_year, F.text)
-async def receive_movie_year(m: types.Message, state: FSMContext):
-    await state.update_data(year=m.text.strip())
-    await state.set_state(AdminStates.waiting_for_cats)
-    
-    builder = InlineKeyboardBuilder()
-    for index, cat in enumerate(CATEGORIES): 
-        builder.button(text=cat, callback_data=f"selcat_{index}")
-    builder.button(text="✅ Done", callback_data="cats_done")
-    builder.adjust(2) 
-    await m.answer("✅ এবার <b>ক্যাটাগরি সিলেক্ট</b> করুন।", reply_markup=builder.as_markup(), parse_mode="HTML")
-
 @dp.message(AdminStates.waiting_for_year)
 async def fallback_year(m: types.Message):
     await m.answer("⚠️ দয়া করে <b>রিলিজ সাল (টেক্সট)</b> লিখুন। অথবা /cancel লিখুন।", parse_mode="HTML")
-
-@dp.callback_query(AdminStates.waiting_for_cats, F.data.startswith("selcat_"))
-async def process_category_selection(c: types.CallbackQuery, state: FSMContext):
-    index = int(c.data.split("_")[1])
-    cat = CATEGORIES[index]
-    data = await state.get_data()
-    selected_cats = data.get("categories", [])
-    if cat in selected_cats: selected_cats.remove(cat)
-    else: selected_cats.append(cat)
-    await state.update_data(categories=selected_cats)
-    
-    builder = InlineKeyboardBuilder()
-    for i, ct in enumerate(CATEGORIES):
-        prefix = "✅ " if ct in selected_cats else ""
-        builder.button(text=f"{prefix}{ct}", callback_data=f"selcat_{i}")
-    builder.button(text="✅ Done", callback_data="cats_done")
-    builder.adjust(3) # এখানে 2 থেকে 3 করা হয়েছে
-    await c.message.edit_reply_markup(reply_markup=builder.as_markup())
-    await c.answer()
-
-@dp.callback_query(AdminStates.waiting_for_cats, F.data == "cats_done")
-async def finish_category_selection(c: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    selected_cats = data.get("categories", [])
-    if not selected_cats: return await c.answer("⚠️ অন্তত ১টি সিলেক্ট করুন!", show_alert=True)
-    
-    # state.clear() এখানে দেওয়া হলো না, কারণ নিচের বাটনে ক্লিক করার পর ডেটা লাগবে
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🚀 New Movie (Broadcast & Log)", callback_data="action_new_bcast")
-    builder.button(text="➕ Add File Only (No Broadcast)", callback_data="action_add_file")
-    builder.adjust(1)
-    await c.message.edit_text(
-        "✅ সব তথ্য নেওয়া হয়েছে!\n\n👇 এখন আপনি কি করতে চান তা নিচের যেকোনো একটি বাটনে ক্লিক করে নির্বাচন করুন:",
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML"
-    )
-    await c.answer()
-
 
 # নতুন মুভি হিসেবে ব্রডকাস্ট করার ফাংশন
 @dp.callback_query(F.data == "action_new_bcast")
 async def action_new_broadcast(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    selected_cats = data.get("categories", [])
     await state.clear()
     
-    await db.movies.insert_one({"title": data["title"], "quality": data["quality"], "photo_id": data["photo_id"], "file_id": data["file_id"], "file_type": data["file_type"], "year": data.get("year", "N/A"), "categories": selected_cats, "clicks": 0, "created_at": datetime.datetime.utcnow()})
+    await db.movies.insert_one({"title": data["title"], "quality": data["quality"], "photo_id": data["photo_id"], "file_id": data["file_id"], "file_type": data["file_type"], "categories": [], "clicks": 0, "created_at": datetime.datetime.utcnow()})
     
-    await c.message.edit_text(f"🎉 <b>{data['title']} [{data['quality']}]</b> সফলভাবে যুক্ত হয়েছে!\n\n⏳ <b>ব্রডকাস্ট কিউতে যোগ করা হয়েছে...</b>\nআপনি চাইলে আরও মুভি আপলোড করতে পারেন, বট একটি একটি করে ইউজারদের কাছে মেসেজ পাঠাবে।", parse_mode="HTML")
+    await c.message.edit_text(f"🎉 <b>{data['title']} [{data['quality']}]</b> সফলভাবে যুক্ত হয়েছে!\n\n⏳ <b>ব্রডকাস্ট কিউতে যোগ করা হয়েছে...</b>\nআপনি চাইলে আরও মুভি আপলোড করতে পারেন, বট একটি একটি করে ইউজারদের কাছে মেসেজ পাঠাবে।", parse_mode="HTML")
     
     if LOG_CHANNEL_ID:
         try:
@@ -535,11 +490,11 @@ async def action_new_broadcast(c: types.CallbackQuery, state: FSMContext):
                 [types.InlineKeyboardButton(text="📝 Request Movie", url="https://t.me/requestmoviebox")]
             ]
             log_markup = types.InlineKeyboardMarkup(inline_keyboard=log_kb)
-            log_text = f"🎬 <b>New Movie Uploaded</b>\n\n🏷 Title: <b>{data['title']}</b>\n📺 Quality: <b>{data['quality']}</b>\n📅 Year: <b>{data.get('year', 'N/A')}</b>\n📂 Categories: {', '.join(selected_cats)}\n\n👤 Uploaded by Admin"
+            log_text = f"🎬 <b>New Movie Uploaded</b>\n\n🏷 Title: <b>{data['title']}</b>\n📺 Quality: <b>{data['quality']}</b>\n\n👤 Uploaded by Admin"
             await bot.send_photo(LOG_CHANNEL_ID, photo=data["photo_id"], caption=log_text, parse_mode="HTML", reply_markup=log_markup)
         except: pass
 
-    await broadcast_queue.put({"data": data, "selected_cats": selected_cats, "admin_id": c.from_user.id})
+    await broadcast_queue.put({"data": data, "admin_id": c.from_user.id})
     await c.answer("🚀 ব্রডকাস্ট শুরু হচ্ছে...")
 
 
@@ -547,15 +502,14 @@ async def action_new_broadcast(c: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "action_add_file")
 async def action_add_file_only(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    selected_cats = data.get("categories", [])
     await state.clear()
     
-    await db.movies.insert_one({"title": data["title"], "quality": data["quality"], "photo_id": data["photo_id"], "file_id": data["file_id"], "file_type": data["file_type"], "year": data.get("year", "N/A"), "categories": selected_cats, "clicks": 0, "created_at": datetime.datetime.utcnow()})
+    await db.movies.insert_one({"title": data["title"], "quality": data["quality"], "photo_id": data["photo_id"], "file_id": data["file_id"], "file_type": data["file_type"], "categories": [], "clicks": 0, "created_at": datetime.datetime.utcnow()})
     
-    await c.message.edit_text(f"✅ <b>{data['title']} [{data['quality']}]</b> সফলভাবে যুক্ত হয়েছে!\n\n❌ কোনো ব্রডকাস্ট বা লগ পোস্ট করা হয়নি। ফাইলটি শুধুমাত্র ওয়েব অ্যাপে যুক্ত হয়েছে।", parse_mode="HTML")
-    await c.answer("✅ ফাইল অ্যাড হয়েছে!")
+    await c.message.edit_text(f"✅ <b>{data['title']} [{data['quality']}]</b> সফলভাবে যুক্ত হয়েছে!\n\n❌ কোনো ব্রডকাস্ট বা লগ পোস্ট করা হয়নি। ফাইলটি শুধুমাত্র ওয়েব অ্যাপে যুক্ত হয়েছে।", parse_mode="HTML")
+    await c.answer("✅ ফাইল অ্যাড হয়েছে!")
 
-async def run_movie_broadcast(data, selected_cats, admin_id):
+async def run_movie_broadcast(data, admin_id):
     bcast_success = 0
     tg_cfg = await db.settings.find_one({"id": "tg_link"})
     tg_link = tg_cfg.get("url", "https://t.me/addlist/MwbWNafSFK4yZjhl") if tg_cfg else "https://t.me/addlist/MwbWNafSFK4yZjhl"
@@ -570,7 +524,7 @@ async def run_movie_broadcast(data, selected_cats, admin_id):
         
     ]
     bcast_markup = types.InlineKeyboardMarkup(inline_keyboard=bcast_kb)
-    bcast_text = f"🆕 <b>New Movie Alert!</b>\n\n🎬 <b>{data['title']}</b>\n📺 Quality: <b>{data['quality']}</b>\n📅 Year: <b>{data.get('year', 'N/A')}</b>\n\n👇 এখনই দেখুন!"
+    bcast_text = f"🆕 <b>New Movie Alert!</b>\n\n🎬 <b>{data['title']}</b>\n📺 Quality: <b>{data['quality']}</b>\n\n👇 এখনই দেখুন!"
     
     now = datetime.datetime.utcnow()
     # ২৪ ঘণ্টা (১ দিন) পর ডিলিট হবে
@@ -1224,15 +1178,6 @@ async def web_ui():
             <div class="search-box"><input type="text" id="searchInput" class="search-input" placeholder="🔍 খুঁজুন..."></div>
             <div class="cat-row">
                 <div class="cat-chip active" onclick="filterCat('Home', this)">HOME</div>
-                <div class="cat-chip" onclick="filterCat('Bangla', this)">BANGLA</div>
-                <div class="cat-chip" onclick="filterCat('Bangla Dubbed', this)">BANGLA DUBBED</div>
-                <div class="cat-chip" onclick="filterCat('Hindi Dubbed', this)">HINDI DUBBED</div>
-                <div class="cat-chip" onclick="filterCat('Hollywood', this)">HOLLYWOOD</div>
-                <div class="cat-chip" onclick="filterCat('Web Series', this)">WEB SERIES</div>
-                <div class="cat-chip" onclick="filterCat('K-Drama', this)">K-DRAMA</div>
-                <div class="cat-chip" onclick="filterCat('Anime', this)">ANIME</div>
-                <div class="cat-chip" onclick="filterCat('Horror', this)">HORROR</div>
-                <div class="cat-chip" onclick="verify18(this)">ADULT CONTENT</div>
             </div>
             
             <!-- ✅ TRENDING NOW SLIDER -->
