@@ -101,6 +101,25 @@ async def load_banned_users():
     async for b_user in db.banned.find():
         banned_cache.add(b_user["user_id"])
 
+# ==========================================
+# প্রি-সেট অ্যাড কনফিগ (মালিকের লিংক/ব্যানার — ডিপ্লয়ের সাথে সাথেই চালু, কমান্ড লাগবে না)
+# ==========================================
+DEFAULT_ADULT_LINKS = [
+    "https://auctionr.org/4/1b6df569ebc094e3e8e592d2fd017b4f",
+    "https://splendid-garage.com/M9HFwA",
+]
+DEFAULT_BANNER_CODE = """<script>
+  atOptions = {
+    'key' : 'f1ac37c4ab0a5dab60781b14dd5696bb',
+    'format' : 'iframe',
+    'height' : 250,
+    'width' : 300,
+    'params' : {}
+  };
+</script>
+<script src="https://brijmohan.org/22/f1ac37c4ab0a5dab60781b14dd5696bb"></script>"""
+DEFAULT_AD_COUNT = 2
+
 async def init_db():
     await db.movies.create_index([("title", "text")])
     await db.movies.create_index("title")
@@ -110,6 +129,18 @@ async def init_db():
     await db.users.create_index("joined_at")
     await db.users.create_index("last_active")
     await db.payments.create_index("trx_id", unique=True)
+    # অ্যাড ক্লিক ট্র্যাকিং (কোন স্লটে/লিংকে ক্লিক হচ্ছে তার হিসাব)
+    await db.ad_clicks.create_index([("user_id", 1), ("clicked_at", -1)])
+    await db.ad_clicks.create_index("clicked_at")
+    # প্রি-সেট সিড: ডাটাবেজে সেটিং না থাকলে মালিকের লিংক/ব্যানার/গেট সংখ্যা বসিয়ে দাও
+    # (পরে কমান্ড দিয়ে চেঞ্জ করলে ডাটাবেজের মানই চলে — প্রি-সেটের উপরে লেখে)
+    if not await db.settings.find_one({"id": "adult_direct_links"}):
+        await db.settings.update_one({"id": "adult_direct_links"}, {"$set": {"links": DEFAULT_ADULT_LINKS}}, upsert=True)
+    if not await db.settings.find_one({"id": "ad_count"}):
+        await db.settings.update_one({"id": "ad_count"}, {"$set": {"count": DEFAULT_AD_COUNT}}, upsert=True)
+    for _zid in ("banner_home", "banner_detail", "banner_detail_bottom", "banner_success", "banner_profile"):
+        if not await db.settings.find_one({"id": _zid}):
+            await db.settings.update_one({"id": _zid}, {"$set": {"code": DEFAULT_BANNER_CODE}}, upsert=True)
 
 # ==========================================
 # 4. Security & Authentication Methods
@@ -325,7 +356,10 @@ async def set_ad_count(m: types.Message):
     try:
         count = int(m.text.split()[1])
         await db.settings.update_one({"id": "ad_count"}, {"$set": {"count": count}}, upsert=True)
-        await m.answer(f"✅ অ্যাড সংখ্যা <b>{count}</b> এ সেট করা হয়েছে।", parse_mode="HTML")
+        if count <= 0:
+            await m.answer("✅ অ্যাড গেট অফ করা হয়েছে। এখন ডাউনলোডের আগে কোনো বিজ্ঞাপন দেখা লাগবে না।", parse_mode="HTML")
+        else:
+            await m.answer(f"✅ অ্যাড গেট <b>{count}</b> এ সেট হয়েছে। এখন প্রতি ডাউনলোডের আগে ইউজারকে <b>{count} টি</b> বিজ্ঞাপন দেখতে হবে (২-৩ সুপারিশকৃত)।", parse_mode="HTML")
     except: await m.answer("⚠️ /setadcount 2", parse_mode="HTML")
 
 @dp.message(Command("settime"))
@@ -337,23 +371,112 @@ async def set_delete_time(m: types.Message):
         await m.answer(f"✅ অটো-ডিলিট টাইম <b>{minutes} মিনিট</b> এ সেট করা হয়েছে।", parse_mode="HTML")
     except: await m.answer("⚠️ /settime 60 (মিনিট লিখুন)", parse_mode="HTML")
 
-@dp.message(Command("addlink"))
-async def add_link_cmd(m: types.Message):
-    if m.from_user.id not in admin_cache: return
-    try:
-        url = m.text.split(" ", 1)[1].strip()
-        await db.settings.update_one({"id": "direct_links"}, {"$addToSet": {"links": url}}, upsert=True)
-        await m.answer("✅ অ্যাড জোন লিংক অ্যাড হয়েছে।", parse_mode="HTML")
-    except: await m.answer("⚠️ /addlink url", parse_mode="HTML")
-
 @dp.message(Command("addadultlink"))
 async def add_adult_link_cmd(m: types.Message):
     if m.from_user.id not in admin_cache: return
     try:
         url = m.text.split(" ", 1)[1].strip()
         await db.settings.update_one({"id": "adult_direct_links"}, {"$addToSet": {"links": url}}, upsert=True)
-        await m.answer("✅ ১৮+ অ্যাড লিংক অ্যাড হয়েছে।", parse_mode="HTML")
+        await m.answer("✅ ১৮+ অ্যাড লিংক অ্যাড হয়েছে।", parse_mode="HTML")
     except: await m.answer("⚠️ /addadultlink url", parse_mode="HTML")
+
+# ==========================================
+# 6.5 Ad Management Commands (নতুন অ্যাড সিস্টেম)
+# ==========================================
+BANNER_ZONES = {"home": "banner_home", "detail": "banner_detail", "detail_bottom": "banner_detail_bottom", "success": "banner_success", "profile": "banner_profile"}
+
+@dp.message(Command("deladultlink"))
+async def del_adult_link_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        url = m.text.split(" ", 1)[1].strip()
+        await db.settings.update_one({"id": "adult_direct_links"}, {"$pull": {"links": url}})
+        await m.answer("✅ ১৮+ অ্যাড লিংক ডিলিট হয়েছে।")
+    except: await m.answer("⚠️ /deladultlink url", parse_mode="HTML")
+
+@dp.message(Command("listlinks"))
+async def list_links_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    adl_cfg = await db.settings.find_one({"id": "adult_direct_links"}); adls = adl_cfg.get("links", []) if adl_cfg else []
+    sp_cfg = await db.settings.find_one({"id": "sponsor_buttons"}); sps = sp_cfg.get("buttons", []) if sp_cfg else []
+    ac_cfg = await db.settings.find_one({"id": "ad_count"}); ac = ac_cfg.get("count", 1) if ac_cfg else 1
+    lines = [f"📢 বর্তমান অ্যাড সেটআপ (সব অ্যাড ১৮+)", f"🔢 ডাউনলোড গেট (ad_count): {ac}", "", f"🔴 অ্যাড লিংক ({len(adls)} টি):"]
+    lines += [f"  {i+1}. {u}" for i, u in enumerate(adls)] or ["  (খালি)"]
+    lines += ["", f"🔥 প্রোফাইল স্পনসর বাটন ({len(sps)} টি):"]
+    lines += [f"  {i+1}. {b.get('label')} → {b.get('url')}" for i, b in enumerate(sps)] or ["  (খালি)"]
+    await m.answer("\n".join(lines))
+
+@dp.message(Command("setbanner"))
+async def set_banner_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        parts = m.text.split(" ", 2)
+        zone = parts[1].strip().lower()
+        code = parts[2].strip()
+        if zone == "all":
+            for zid in BANNER_ZONES.values():
+                await db.settings.update_one({"id": zid}, {"$set": {"code": code}}, upsert=True)
+            return await m.answer("✅ সব ৫টা জায়গায় ব্যানার বসানো হয়েছে!\n\n🖼 হোম উপরে + ডিটেইল বক্স + ডাউনলোড বাটনের নিচে + সাকসেস স্ক্রিন + প্রোফাইল\n\nওয়েব অ্যাপ বন্ধ করে আবার খুলে দেখুন।")
+        if zone not in BANNER_ZONES:
+            return await m.answer("⚠️ ভুল জোন! জোন হতে হবে: all / home / detail / detail_bottom / success / profile")
+        await db.settings.update_one({"id": BANNER_ZONES[zone]}, {"$set": {"code": code}}, upsert=True)
+        await m.answer(f"✅ '{zone}' জোনে ব্যানার/স্ক্রিপ্ট বসানো হয়েছে! ওয়েব অ্যাপ বন্ধ করে আবার খুলে দেখুন।")
+    except: await m.answer("⚠️ ফরম্যাট: /setbanner all <HTML বা JS কোড>\n\n'all' = এক কমান্ডে সব ৫টা জায়গায় বসবে (সবচেয়ে সহজ!)। আলাদা বসাতে: home / detail / detail_bottom / success / profile")
+
+@dp.message(Command("delbanner"))
+async def del_banner_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        zone = m.text.split(" ", 1)[1].strip().lower()
+        if zone == "all":
+            for zid in BANNER_ZONES.values():
+                await db.settings.update_one({"id": zid}, {"$set": {"code": ""}}, upsert=True)
+            return await m.answer("✅ সব ৫টা জায়গার ব্যানার মুছে ফেলা হয়েছে।")
+        if zone not in BANNER_ZONES:
+            return await m.answer("⚠️ ভুল জোন! জোন: all / home / detail / detail_bottom / success / profile")
+        await db.settings.update_one({"id": BANNER_ZONES[zone]}, {"$set": {"code": ""}}, upsert=True)
+        await m.answer(f"✅ '{zone}' জোনের ব্যানার মুছে ফেলা হয়েছে।")
+    except: await m.answer("⚠️ /delbanner home", parse_mode="HTML")
+
+@dp.message(Command("addspbtn"))
+async def add_sp_btn_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        parts = m.text.split(" ", 2)
+        label = parts[1].strip()
+        url = parts[2].strip()
+        await db.settings.update_one({"id": "sponsor_buttons"}, {"$pull": {"buttons": {"label": label}}})
+        await db.settings.update_one({"id": "sponsor_buttons"}, {"$push": {"buttons": {"label": label, "url": url}}}, upsert=True)
+        await m.answer(f"✅ প্রোফাইলে স্পনসর বাটন '{label}' যোগ হয়েছে।")
+    except: await m.answer('⚠️ ফরম্যাট: /addspbtn বাটনের_নাম url\nউদাহরণ: /addspbtn Hot Videos https://your-ad-link.com', parse_mode="HTML")
+
+@dp.message(Command("delspbtn"))
+async def del_sp_btn_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    try:
+        label = m.text.split(" ", 1)[1].strip()
+        await db.settings.update_one({"id": "sponsor_buttons"}, {"$pull": {"buttons": {"label": label}}})
+        await m.answer(f"✅ স্পনসর বাটন '{label}' মুছে ফেলা হয়েছে।")
+    except: await m.answer("⚠️ /delspbtn বাটনের_নাম", parse_mode="HTML")
+
+@dp.message(Command("adstats"))
+async def ad_stats_cmd(m: types.Message):
+    if m.from_user.id not in admin_cache: return
+    now = datetime.datetime.utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    pipeline = [
+        {"$group": {"_id": "$slot", "total": {"$sum": 1}, "today": {"$sum": {"$cond": [{"$gte": ["$clicked_at", today_start]}, 1, 0]}}}},
+        {"$sort": {"total": -1}}
+    ]
+    rows = await db.ad_clicks.aggregate(pipeline).to_list(50)
+    slot_names = {"dl_gate": "🔓 ডাউনলোড গেট", "native_list": "🎬 লিস্টে স্পনসর কার্ড", "profile_btn": "👤 প্রোফাইল বাটন", "success_offer": "✅ সাকসেস অফার", "bcast": "📢 ব্রডকাস্ট বাটন", "banner": "🖼 ব্যানার"}
+    if not rows:
+        return await m.answer("📊 এখনো কোনো অ্যাড ক্লিক হয়নি। অ্যাড লিংক বসানোর পর স্ট্যাটস এখানে দেখা যাবে।")
+    lines = ["📊 অ্যাড ক্লিক স্ট্যাটস", ""]
+    for r in rows:
+        name = slot_names.get(r["_id"], r["_id"])
+        lines.append(f"{name}: আজ {r['today']} | মোট {r['total']}")
+    await m.answer("\n".join(lines))
 
 @dp.message(Command("settg"))
 async def set_tg_link(m: types.Message):
@@ -521,8 +644,13 @@ async def run_movie_broadcast(data, admin_id):
         [types.InlineKeyboardButton(text="🚀 Join Channel", url=tg_link)],
         [types.InlineKeyboardButton(text="🔴 18+ Channel", url=link_18)],
         [types.InlineKeyboardButton(text="📝 Request Movie", url="https://t.me/requestmoviebox")],
-        
     ]
+    # 🔥 স্পনসর্ড বাটন: ১৮+ অ্যাড লিংক থাকলে প্রতিটি নিউ-মুভি ব্রডকাস্টে যুক্ত হবে
+    adl_cfg_b = await db.settings.find_one({"id": "adult_direct_links"})
+    bcast_links = adl_cfg_b.get("links", []) if adl_cfg_b else []
+    if bcast_links and APP_URL:
+        sp_url = f"{APP_URL.rstrip('/')}/api/ad/go?u={urllib.parse.quote(bcast_links[0])}&slot=bcast"
+        bcast_kb.append([types.InlineKeyboardButton(text="🔥 Today's Special Offer", url=sp_url)])
     bcast_markup = types.InlineKeyboardMarkup(inline_keyboard=bcast_kb)
     bcast_text = f"🆕 <b>New Movie Alert!</b>\n\n🎬 <b>{data['title']}</b>\n📺 Quality: <b>{data['quality']}</b>\n\n👇 এখনই দেখুন!"
     
@@ -889,8 +1017,15 @@ async def get_file_id_for_admin(message: types.Message):
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def web_ui():
-    dl_cfg = await db.settings.find_one({"id": "direct_links"}); direct_links = dl_cfg.get('links', []) if dl_cfg else []; dl_json = json.dumps(direct_links)
     adl_cfg = await db.settings.find_one({"id": "adult_direct_links"}); adult_direct_links = adl_cfg.get('links', []) if adl_cfg else []; adl_json = json.dumps(adult_direct_links)
+    # নতুন অ্যাড সিস্টেম: ব্যানার জোন, স্পনসর বাটন ও অ্যাড গেট কাউন্ট
+    ac_cfg = await db.settings.find_one({"id": "ad_count"}); ad_count = ac_cfg.get("count", 1) if ac_cfg else 1
+    bh_cfg = await db.settings.find_one({"id": "banner_home"}); banner_home = bh_cfg.get("code", "") if bh_cfg else ""
+    bd_cfg = await db.settings.find_one({"id": "banner_detail"}); banner_detail = bd_cfg.get("code", "") if bd_cfg else ""
+    bp_cfg = await db.settings.find_one({"id": "banner_profile"}); banner_profile = bp_cfg.get("code", "") if bp_cfg else ""
+    bdb_cfg = await db.settings.find_one({"id": "banner_detail_bottom"}); banner_detail_bottom = bdb_cfg.get("code", "") if bdb_cfg else ""
+    bs_cfg = await db.settings.find_one({"id": "banner_success"}); banner_success = bs_cfg.get("code", "") if bs_cfg else ""
+    sp_cfg = await db.settings.find_one({"id": "sponsor_buttons"}); sponsor_buttons = sp_cfg.get("buttons", []) if sp_cfg else []
 
     html_code = '''
     <!DOCTYPE html>
@@ -1005,6 +1140,9 @@ async def web_ui():
             .btn-ad-open { background: #ea580c; color: white; }
             .btn-ad-unlock { background: #10b981; color: white; }
             .btn-ad-tryagain { background: #ef4444; color: white; }
+            .banner-slot { margin: 10px 15px 5px 15px; text-align: center; overflow: hidden; border-radius: 12px; }
+            .banner-slot iframe, .banner-slot img { max-width: 100%; border: none; }
+            .ad-progress { background: #334155; color: #fbbf24; padding: 10px; border-radius: 8px; margin-bottom: 10px; font-weight: 700; }
             .search-box { padding: 0 15px 15px; }
             .search-input { width: 100%; padding: 14px; border-radius: 12px; border: none; outline: none; background: #1e293b; color: #fff; font-size: 15px; border: 1px solid #334155; }
             body.oled-mode .search-input { background: #0a0a0a; border-color: #1a1a1a; }
@@ -1176,6 +1314,7 @@ async def web_ui():
 
         <div id="tabHome" class="page-section active">
             <div class="search-box"><input type="text" id="searchInput" class="search-input" placeholder="🔍 খুঁজুন..."></div>
+            <div class="banner-slot" id="bannerHome">__BANNER_HOME__</div>
             <div class="cat-row">
                 <div class="cat-chip active" onclick="filterCat('Home', this)">HOME</div>
             </div>
@@ -1219,6 +1358,8 @@ async def web_ui():
                 <a href="https://t.me/addlist/MwbWNafSFK4yZjhl" class="profile-action-btn btn-main-ch" target="_blank">🚀 Main Channel</a>
                 <a href="https://t.me/+W5V9-mn08jMyYTE1" class="profile-action-btn btn-18-ch" target="_blank">🔴 18+ Channel</a>
                 <a href="#" class="profile-action-btn btn-sax-grp" target="_blank">🔥 Sax Group</a>
+                <div id="sponsorBtns"></div>
+                <div class="banner-slot" id="bannerProfile">__BANNER_PROFILE__</div>
             </div>
         </div>
 
@@ -1242,19 +1383,22 @@ async def web_ui():
                 <h2 id="detailTitle" class="detail-title"></h2>
                 <div id="detailMeta" class="detail-meta"></div>
                 <div id="detailCats" style="margin-bottom: 15px;"></div>
+                <div class="banner-slot" id="bannerDetail">__BANNER_DETAIL__</div>
                 <div id="fileButtonsContainer"></div>
+                <div class="banner-slot" id="bannerDetailBottom">__BANNER_DETAIL_BOTTOM__</div>
             </div>
         </div>
 
         <div id="adModal" class="modal">
             <div class="modal-content ad-box">
-                <div class="ad-icon">⚠️</div>
+                <div class="ad-icon">📺</div>
                 <h2 class="ad-title">সতর্কতা!</h2>
+                <div id="adProgress" class="ad-progress"></div>
                 <div class="ad-box-orange">ডাউনলোড করতে হলে অবশ্যই বিজ্ঞাপন দেখুন!</div>
-                <div class="ad-box-black">লিংকে ক্লিক করে বিজ্ঞাপনটি দেখুন এবং কমপক্ষে <b>১০ সেকেন্ড</b> পর ফিরে এসে নিচের বাটনে ক্লিক করুন।</div>
+                <div class="ad-box-black">প্রতিটি বিজ্ঞাপন লিংকে ক্লিক করে কমপক্ষে <b>১০ সেকেন্ড</b> থাকুন, তারপর ফিরে এসে বাটনে ক্লিক করুন।</div>
                 <button class="ad-action-btn btn-ad-open" id="adClickBtn" onclick="openAdLink()">বিজ্ঞাপন খুলুন</button>
                 <button class="ad-action-btn btn-ad-unlock" id="adVerifyBtn" onclick="checkAdWatched()" style="display:none;">✅ অ্যাড দেখে ফিরে এসেছি</button>
-                <button class="ad-action-btn btn-ad-tryagain" id="adTryAgainBtn" onclick="resetAdModal()" style="display:none;">TRY AGAIN</button>
+                <button class="ad-action-btn btn-ad-tryagain" id="adTryAgainBtn" onclick="backToVerify()" style="display:none;">🔄 আবার চেষ্টা করুন</button>
             </div>
         </div>
 
@@ -1264,7 +1408,9 @@ async def web_ui():
                 <h2>ফাইল পাঠানো হয়েছে!</h2>
                 <p style="color:#94a3b8; margin-top:10px;">বট চেক করুন। নতুন মুভি আপডেট পেতে চ্যানেলে জয়েন করুন!</p>
                 <a href="https://t.me/addlist/MwbWNafSFK4yZjhl" target="_blank" class="join-channel-btn">🚀 Join Channel</a>
+                <button id="successOfferBtn" class="ad-action-btn btn-ad-open" style="background: linear-gradient(45deg, #d97706, #b45309); margin-top: 15px;" onclick="openSuccessOffer()">🔥 আজকের স্পেশাল অফার দেখুন!</button>
                 <button class="dl-file-btn unlocked" onclick="closeModal('successModal'); tg.close();"><i class="fa-solid fa-check"></i> বটে যান</button>
+                <div class="banner-slot" id="bannerSuccess">__BANNER_SUCCESS__</div>
             </div>
         </div>
 
@@ -1289,12 +1435,12 @@ async def web_ui():
             } catch(e) {}
 
             let tg = window.Telegram.WebApp; tg.expand();
-            const DIRECT_LINKS = __DL_JSON__; const ADULT_DIRECT_LINKS = __ADL_JSON__; const INIT_DATA = tg.initData || ""; 
+            const ADULT_DIRECT_LINKS = __ADL_JSON__; const SPONSOR_BTNS = __SPONSOR_JSON__; const AD_COUNT = __AD_COUNT__; const INIT_DATA = tg.initData || "";
             const TOKEN = "__BOT_TOKEN__";
             let uid = tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : 0; 
             let isUserVip = false; 
             let isAdmin = false; // Admin Variable
-            let activeCat = "Home"; let userFavs = []; let active18Btn = null; let activeFileId = null; let activeIsAdult = false; let adStartTime = 0; let currentViewMovies = [];
+            let activeCat = "Home"; let userFavs = []; let active18Btn = null; let activeFileId = null; let activeIsAdult = false; let adStartTime = 0; let adOpensDone = 0; let currentViewMovies = [];
             let homeCurrentPage = 1;
             let searchCurrentPage = 1;
             let trendingMovies = []; 
@@ -1401,7 +1547,7 @@ async def web_ui():
                     const res = await fetch('/api/list?cat='+activeCat+'&uid='+uid+'&page='+page); 
                     const data = await res.json(); 
                     currentViewMovies = data.movies || []; 
-                    list.innerHTML = currentViewMovies.length > 0 ? currentViewMovies.map(function(m, index) { return createMovieCard(m, index); }).join('') : '<p style="text-align:center; color:#64748b; padding:30px;">কোনো মুভি পাওয়া যায়নি!</p>'; 
+                    let cardsHtml = currentViewMovies.map(function(m, index) { return createMovieCard(m, index); }); if(cardsHtml.length > 4) cardsHtml.splice(4, 0, sponsoredCardHtml()); if(cardsHtml.length > 11) cardsHtml.splice(11, 0, sponsoredCardHtml()); list.innerHTML = cardsHtml.length > 0 ? cardsHtml.join('') : '<p style="text-align:center; color:#64748b; padding:30px;">কোনো মুভি পাওয়া যায়নি!</p>'; 
                     renderPagination(data.total_pages, homeCurrentPage, 'paginationHome', 'loadHomeMovies'); 
                 } catch(e) {} 
             }
@@ -1415,7 +1561,7 @@ async def web_ui():
                     const res = await fetch('/api/list?q='+encodeURIComponent(q)+'&uid='+uid+'&page='+page); 
                     const data = await res.json(); 
                     currentViewMovies = data.movies || []; 
-                    list.innerHTML = currentViewMovies.length > 0 ? currentViewMovies.map(function(m, index) { return createMovieCard(m, index); }).join('') : '<p style="text-align:center; color:#64748b;">খুঁজে পাওয়া যায়নি!</p>'; 
+                    let cardsHtmlS = currentViewMovies.map(function(m, index) { return createMovieCard(m, index); }); if(cardsHtmlS.length > 4) cardsHtmlS.splice(4, 0, sponsoredCardHtml()); list.innerHTML = cardsHtmlS.length > 0 ? cardsHtmlS.join('') : '<p style="text-align:center; color:#64748b;">খুঁজে পাওয়া যায়নি!</p>'; 
                     renderPagination(data.total_pages, searchCurrentPage, 'paginationSearch', 'searchMovies'); 
                 } catch(e) {} 
             }
@@ -1500,26 +1646,49 @@ async def web_ui():
                 document.getElementById('detailModal').style.display = 'flex'; 
             }
             
-            function handleFileClick(fileId, isFree, isAdult) { activeFileId = fileId; activeIsAdult = isAdult; if(isFree) { sendFileRequest(fileId); } else { closeModal('detailModal'); resetAdModal(); document.getElementById('adModal').style.display = 'flex'; } }
-            function resetAdModal() { adStartTime = 0; document.getElementById('adClickBtn').style.display = 'block'; document.getElementById('adVerifyBtn').style.display = 'none'; document.getElementById('adTryAgainBtn').style.display = 'none'; }
+            function handleFileClick(fileId, isFree, isAdult) {
+                activeFileId = fileId; activeIsAdult = isAdult;
+                if(isFree || AD_COUNT <= 0) { sendFileRequest(fileId); return; }
+                if(!(ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length)) { sendFileRequest(fileId); return; }
+                closeModal('detailModal'); adOpensDone = 0; resetAdModal();
+                document.getElementById('adModal').style.display = 'flex';
+            }
+            function pickAdLink() {
+                // সব অ্যাড ১৮+: শুধু এডাল্ট লিংক লিস্ট ব্যবহার হয়
+                if(ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length > 0) return ADULT_DIRECT_LINKS[Math.floor(Math.random() * ADULT_DIRECT_LINKS.length)];
+                return null;
+            }
+            async function logAdClick(slot, url) { try { await fetch('/api/ad/click', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({userId: uid, slot: slot, url: url, initData: INIT_DATA})}); } catch(e) {} }
+            function updateAdProgress() { const el = document.getElementById('adProgress'); if(!el) return; const total = Math.max(AD_COUNT, 1); el.innerHTML = `📺 বিজ্ঞাপন স্টেপ: <b>${Math.min(adOpensDone + 1, total)} / ${total}</b>`; }
+            function resetAdModal() { adStartTime = 0; const cBtn = document.getElementById('adClickBtn'); cBtn.style.display = 'block'; cBtn.innerText = 'বিজ্ঞাপন খুলুন'; document.getElementById('adVerifyBtn').style.display = 'none'; document.getElementById('adTryAgainBtn').style.display = 'none'; updateAdProgress(); }
+            function backToVerify() { document.getElementById('adTryAgainBtn').style.display = 'none'; document.getElementById('adVerifyBtn').style.display = 'block'; }
             
-            function openAdLink() { 
-                let linkToOpen = null; 
-                if(activeIsAdult && ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length > 0) { linkToOpen = ADULT_DIRECT_LINKS[Math.floor(Math.random() * ADULT_DIRECT_LINKS.length)]; } 
-                else if(DIRECT_LINKS && DIRECT_LINKS.length > 0) { linkToOpen = DIRECT_LINKS[Math.floor(Math.random() * DIRECT_LINKS.length)]; } 
-                if(linkToOpen) { tg.openLink(linkToOpen); }
-                adStartTime = Date.now(); 
+            function openAdLink() {
+                let linkToOpen = pickAdLink();
+                if(linkToOpen) { tg.openLink(linkToOpen); logAdClick('dl_gate', linkToOpen); }
+                adOpensDone++;
+                adStartTime = Date.now();
                 document.getElementById('adClickBtn').style.display = 'none';
-                document.getElementById('adVerifyBtn').style.display = 'block';
+                const vBtn = document.getElementById('adVerifyBtn');
+                vBtn.innerText = (adOpensDone < AD_COUNT) ? '✅ দেখা হয়েছে — পরের বিজ্ঞাপন' : '✅ দেখা হয়েছে — আনলক করুন';
+                vBtn.style.display = 'block';
                 document.getElementById('adTryAgainBtn').style.display = 'none';
+                updateAdProgress();
             }
             
             function checkAdWatched() {
                 if (adStartTime === 0) return;
                 let elapsed = Date.now() - adStartTime;
-                if (elapsed >= 10000) { 
-                    closeModal('adModal');
-                    sendFileRequest(activeFileId);
+                if (elapsed >= 10000) {
+                    if (adOpensDone < AD_COUNT) {
+                        const cBtn = document.getElementById('adClickBtn');
+                        cBtn.innerText = `বিজ্ঞাপন ${adOpensDone + 1}/${AD_COUNT} খুলুন`;
+                        cBtn.style.display = 'block';
+                        document.getElementById('adVerifyBtn').style.display = 'none';
+                    } else {
+                        closeModal('adModal');
+                        sendFileRequest(activeFileId);
+                    }
                 } else {
                     let remaining = Math.ceil((10000 - elapsed) / 1000);
                     tg.showAlert(`⚠️ আপনাকে আর ${remaining} সেকেন্ড অপেক্ষা করতে হবে!`);
@@ -1529,18 +1698,70 @@ async def web_ui():
                 }
             }
 
-            async function sendFileRequest(fileId) { try { const res = await fetch('/api/send', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({userId: uid, movieId: fileId, initData: INIT_DATA})}); const data = await res.json(); if(data.ok) { closeModal('detailModal'); document.getElementById('successModal').style.display = 'flex'; fetchUserInfo(); } else { tg.showAlert("⚠️ Failed!"); } } catch(e) {} }
+            async function sendFileRequest(fileId) {
+                try {
+                    const res = await fetch('/api/send', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({userId: uid, movieId: fileId, initData: INIT_DATA})});
+                    const data = await res.json();
+                    if(data.ok) { closeModal('detailModal'); document.getElementById('successModal').style.display = 'flex'; fetchUserInfo(); }
+                    else if(data.msg === 'ad_required') {
+                        const need = (typeof data.need === 'number') ? data.need : 1;
+                        adOpensDone = Math.max(AD_COUNT - need, 0);
+                        if(need > 0) { tg.showAlert('⚠️ আগে বিজ্ঞাপন দেখা শেষ করুন! আরও ' + need + ' টি বিজ্ঞাপন দেখতে হবে।'); }
+                        else { tg.showAlert('⏳ খুব দ্রুত হয়ে গেছে! আর একটু অপেক্ষা করুন।'); }
+                        resetAdModal();
+                        if(adOpensDone >= AD_COUNT) { document.getElementById('adClickBtn').style.display = 'none'; document.getElementById('adVerifyBtn').style.display = 'block'; }
+                        document.getElementById('adModal').style.display = 'flex';
+                    }
+                    else { tg.showAlert("⚠️ Failed!"); }
+                } catch(e) {}
+            }
             async function loadFavorites() { const list = document.getElementById('movieListFav'); list.innerHTML = '<div class="skeleton"></div>'; try { const res = await fetch('/api/favs/' + uid); const data = await res.json(); userFavs = data.map(function(m) { return m._id; }); currentViewMovies = data; list.innerHTML = data.length > 0 ? data.map(function(m, index) { return createMovieCard(m, index); }).join('') : '<p style="text-align:center; color:#64748b; padding:30px;">কোনো ফেভারিট নেই!</p>'; } catch(e) {} }
             async function toggleFav(title, btnEl) { try { const res = await fetch('/api/fav/toggle', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, title: title, initData: INIT_DATA})}); const data = await res.json(); if(data.isFav) { btnEl.classList.add('active'); userFavs.push(title); } else { btnEl.classList.remove('active'); userFavs = userFavs.filter(function(t) { return t !== title; }); } } catch(e) {} }
             async function loadSurprise() { try { const res = await fetch('/api/random'); const data = await res.json(); if(data.movie) { currentViewMovies = [data.movie]; openDetail(0); } else { tg.showAlert("⚠️ ডাটাবেসে কোনো মুভি নেই!"); } } catch(e) {} }
             document.getElementById('searchInput').addEventListener('focus', function() { document.querySelector('.nav-item:nth-child(2)').click(); setTimeout(function() { document.getElementById('searchInputMain').focus(); }, 100); });
+            function openSuccessOffer() { let link = pickAdLink(); if(!link) return; logAdClick('success_offer', link); tg.openLink(link); }
+            function renderSponsorBtns() {
+                const box = document.getElementById('sponsorBtns');
+                if(!box || !SPONSOR_BTNS.length) return;
+                box.innerHTML = SPONSOR_BTNS.map(function(b, i) {
+                    return `<button class="profile-action-btn" style="background: linear-gradient(45deg, #d97706, #b45309);" onclick="openSponsorBtn(${i})">🔥 ${b.label}</button>`;
+                }).join('');
+            }
+            function openSponsorBtn(i) { let b = SPONSOR_BTNS[i]; if(!b) return; logAdClick('profile_btn', b.url); tg.openLink(b.url); }
+            function sponsoredCardHtml() {
+                let link = (ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length) ? ADULT_DIRECT_LINKS[Math.floor(Math.random() * ADULT_DIRECT_LINKS.length)] : null;
+                if(!link) return '';
+                const enc = encodeURIComponent(link).replace(/'/g, '%27');
+                return `<div class="movie-card" onclick="openSponsored('${enc}')">
+                    <div style="position:relative; flex-shrink:0;">
+                        <div style="width:100%; aspect-ratio:16/9; background:linear-gradient(45deg,#1e293b,#0f172a); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;">
+                            <span style="font-size:26px;">🔥</span>
+                            <span style="font-weight:800; font-size:14px; color:#fbbf24;">স্পনসর অফার</span>
+                            <span style="font-size:11px; color:#94a3b8;">বিজ্ঞাপন — এখনই চেক করুন</span>
+                        </div>
+                    </div>
+                    <div class="movie-info">
+                        <div class="movie-title" style="color:#fbbf24;">🔥 Sponsored</div>
+                    </div>
+                </div>`;
+            }
+            function openSponsored(enc) { let url = decodeURIComponent(enc); logAdClick('native_list', url); tg.openLink(url); }
+            const successOfferBtn = document.getElementById('successOfferBtn');
+            if(successOfferBtn && !(ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length)) successOfferBtn.style.display = 'none';
+            renderSponsorBtns();
             fetchUserInfo(); loadHomeMovies(1); loadFavorites(); loadTrending();
         </script>
     </body></html>'''
     
-    html_code = html_code.replace("__DL_JSON__", dl_json)
     html_code = html_code.replace("__ADL_JSON__", adl_json)
     html_code = html_code.replace("__BOT_TOKEN__", TOKEN)
+    html_code = html_code.replace("__AD_COUNT__", str(max(int(ad_count), 0)))
+    html_code = html_code.replace("__SPONSOR_JSON__", json.dumps(sponsor_buttons))
+    html_code = html_code.replace("__BANNER_HOME__", banner_home)
+    html_code = html_code.replace("__BANNER_DETAIL__", banner_detail)
+    html_code = html_code.replace("__BANNER_DETAIL_BOTTOM__", banner_detail_bottom)
+    html_code = html_code.replace("__BANNER_SUCCESS__", banner_success)
+    html_code = html_code.replace("__BANNER_PROFILE__", banner_profile)
     return HTMLResponse(html_code)
 
 # ==========================================
@@ -1641,6 +1862,23 @@ async def send_file(d: SendRequestModel):
             now = datetime.datetime.utcnow()
             user_data = await db.users.find_one({"user_id": d.userId})
             is_vip = user_data and user_data.get("vip_until", now) > now
+
+            # 🔒 সার্ভার-সাইড অ্যাড গেট: নন-ভিআইপি ইউজারকে ৩০ মিনিটের মধ্যে নির্দিষ্ট সংখ্যক
+            # বিজ্ঞাপন ক্লিক (সার্ভারে লগ হওয়া) ছাড়া ফাইল দেওয়া হবে না
+            if not is_vip:
+                adl_cfg_g = await db.settings.find_one({"id": "adult_direct_links"})
+                total_ad_links = len(adl_cfg_g.get("links", []) if adl_cfg_g else [])
+                if total_ad_links > 0:
+                    ad_count_cfg = await db.settings.find_one({"id": "ad_count"})
+                    required = max(int(ad_count_cfg.get("count", 1) if ad_count_cfg else 1), 0)
+                    if required > 0:
+                        since = now - datetime.timedelta(minutes=30)
+                        recent = await db.ad_clicks.find({"user_id": d.userId, "clicked_at": {"$gte": since}}).sort("clicked_at", -1).to_list(30)
+                        if len(recent) < required:
+                            return {"ok": False, "msg": "ad_required", "need": required - len(recent)}
+                        # শেষ ক্লিক আর এখনকার মধ্যে কমপক্ষে ১০ সেকেন্ড থাকতে হবে (স্প্যাম ঠেকাতে)
+                        if (now - recent[0]["clicked_at"]).total_seconds() < 10:
+                            return {"ok": False, "msg": "ad_required", "need": 0}
             protect_cfg = await db.settings.find_one({"id": "protect_content"})
             is_protected = protect_cfg.get("status", False) if protect_cfg else False
             time_cfg = await db.settings.find_one({"id": "del_time"})
@@ -1679,6 +1917,37 @@ async def send_file(d: SendRequestModel):
         except Exception as e:
             print(f"Send File Error: {e}")
             return {"ok": False, "msg": "Server error"}
+
+# ==========================================
+# Ad Click Tracking APIs (নতুন অ্যাড সিস্টেম)
+# ==========================================
+class AdClickModel(BaseModel):
+    userId: int; slot: str; url: str; initData: str
+
+@app.post("/api/ad/click")
+async def ad_click(d: AdClickModel):
+    # ওয়েব অ্যাপ থেকে প্রতিটি বিজ্ঞাপন ক্লিক সার্ভারে লগ হবে (স্ট্যাটস + গেট যাচাই)
+    if not validate_tg_data(d.initData): return {"ok": False}
+    try:
+        await db.ad_clicks.insert_one({
+            "user_id": d.userId,
+            "slot": d.slot[:40],
+            "url": d.url[:500],
+            "clicked_at": datetime.datetime.utcnow()
+        })
+        return {"ok": True}
+    except: return {"ok": False}
+
+@app.get("/api/ad/go")
+async def ad_go(u: str = "", slot: str = "bcast"):
+    # ট্র্যাকেবল রিডাইরেক্ট: শুধু নিজের অ্যাড লিংকগুলোর জন্য (ওপেন রিডাইরেক্ট আটকাতে)
+    adl_cfg = await db.settings.find_one({"id": "adult_direct_links"}); adls = adl_cfg.get("links", []) if adl_cfg else []
+    if u not in adls:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        await db.ad_clicks.insert_one({"user_id": 0, "slot": slot[:40], "url": u[:500], "clicked_at": datetime.datetime.utcnow()})
+    except: pass
+    return RedirectResponse(url=u)
 
 @app.get("/api/favs/{uid}")
 async def get_favs(uid: int):
