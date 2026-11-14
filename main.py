@@ -44,6 +44,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URL = os.getenv("MONGO_URI")
 OWNER_ID = int(os.getenv("ADMIN_ID", "0"))
 APP_URL = os.getenv("APP_URL")
+BOT_USER = os.getenv("BOT_USERNAME", "bdviralboxx_bot")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003904328439") 
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123") 
 BOT_USERNAME = "@bdviralboxx_bot" 
@@ -208,7 +209,7 @@ async def broadcast_queue_worker():
         try:
             # কিউ থেকে ডেটা নিবে (আগের ব্রডকাস্ট শেষ না হলে এখানে অপেক্ষা করবে)
             task_data = await broadcast_queue.get()
-            await run_movie_broadcast(task_data['data'], task_data['admin_id'])
+            await run_movie_broadcast(task_data['data'], task_data['admin_id'], task_data.get('movie_id'))
             broadcast_queue.task_done()
         except Exception as e:
             print(f"Queue Worker Error: {e}")
@@ -217,9 +218,15 @@ async def broadcast_queue_worker():
 # স্টার্টআপ ইভেন্ট
 @app.on_event("startup")
 async def on_startup():
+    global BOT_USER
     await init_db()
     await load_admins()
     await load_banned_users()
+    # বটের আসল username নিয়ে নিই (শেয়ার ডিপ-লিংকের জন্য)
+    try:
+        me = await bot.get_me()
+        if me and me.username: BOT_USER = me.username
+    except Exception as e: print(f"Bot username fetch failed: {e}")
     asyncio.create_task(auto_delete_worker())
     asyncio.create_task(broadcast_queue_worker())
     asyncio.create_task(auto_lock_worker())
@@ -601,14 +608,15 @@ async def action_new_broadcast(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await state.clear()
     
-    await db.movies.insert_one({"title": data["title"], "quality": data["quality"], "photo_id": data["photo_id"], "file_id": data["file_id"], "file_type": data["file_type"], "categories": [], "clicks": 0, "created_at": datetime.datetime.utcnow()})
+    ins_result = await db.movies.insert_one({"title": data["title"], "quality": data["quality"], "photo_id": data["photo_id"], "file_id": data["file_id"], "file_type": data["file_type"], "categories": [], "clicks": 0, "created_at": datetime.datetime.utcnow()})
+    movie_id = str(ins_result.inserted_id)
     
     await c.message.edit_text(f"🎉 <b>{data['title']} [{data['quality']}]</b> সফলভাবে যুক্ত হয়েছে!\n\n⏳ <b>ব্রডকাস্ট কিউতে যোগ করা হয়েছে...</b>\nআপনি চাইলে আরও মুভি আপলোড করতে পারেন, বট একটি একটি করে ইউজারদের কাছে মেসেজ পাঠাবে।", parse_mode="HTML")
     
     if LOG_CHANNEL_ID:
         try:
             log_kb = [
-                [types.InlineKeyboardButton(text="🎬 Watch Now", url="https://t.me/bdviralboxx_bot?start=new")],
+                [types.InlineKeyboardButton(text="🎬 Watch Now", url=f"https://t.me/{BOT_USER}?startapp={movie_id}")],
                 [types.InlineKeyboardButton(text="📥 ডাউনলোড কিভাবে করবেন", url="https://t.me/SakibMovieBox/62")],
                 [types.InlineKeyboardButton(text="📝 Request Movie", url="https://t.me/requestmoviebox")]
             ]
@@ -617,7 +625,7 @@ async def action_new_broadcast(c: types.CallbackQuery, state: FSMContext):
             await bot.send_photo(LOG_CHANNEL_ID, photo=data["photo_id"], caption=log_text, parse_mode="HTML", reply_markup=log_markup)
         except: pass
 
-    await broadcast_queue.put({"data": data, "admin_id": c.from_user.id})
+    await broadcast_queue.put({"data": data, "admin_id": c.from_user.id, "movie_id": movie_id})
     await c.answer("🚀 ব্রডকাস্ট শুরু হচ্ছে...")
 
 
@@ -632,14 +640,19 @@ async def action_add_file_only(c: types.CallbackQuery, state: FSMContext):
     await c.message.edit_text(f"✅ <b>{data['title']} [{data['quality']}]</b> সফলভাবে যুক্ত হয়েছে!\n\n❌ কোনো ব্রডকাস্ট বা লগ পোস্ট করা হয়নি। ফাইলটি শুধুমাত্র ওয়েব অ্যাপে যুক্ত হয়েছে।", parse_mode="HTML")
     await c.answer("✅ ফাইল অ্যাড হয়েছে!")
 
-async def run_movie_broadcast(data, admin_id):
+async def run_movie_broadcast(data, admin_id, movie_id=None):
     bcast_success = 0
     tg_cfg = await db.settings.find_one({"id": "tg_link"})
     tg_link = tg_cfg.get("url", "https://t.me/addlist/MwbWNafSFK4yZjhl") if tg_cfg else "https://t.me/addlist/MwbWNafSFK4yZjhl"
     link_18 = "https://t.me/+W5V9-mn08jMyYTE1"
     web_app_url = APP_URL if APP_URL else "https://t.me/" 
+    # ডিপ-লিংক: Watch Now এ ক্লিক করতেই সরাসরি এই মুভির ডাউনলোড পেজ খুলবে (হোম পেজে না)
+    if movie_id and BOT_USER:
+        watch_btn = [types.InlineKeyboardButton(text="🎬 Watch Now", url=f"https://t.me/{BOT_USER}?startapp={movie_id}")]
+    else:
+        watch_btn = [types.InlineKeyboardButton(text="🎬 Watch Now", web_app=types.WebAppInfo(url=web_app_url))]
     bcast_kb = [
-        [types.InlineKeyboardButton(text="🎬 Watch Now", web_app=types.WebAppInfo(url=web_app_url))], 
+        watch_btn, 
         [types.InlineKeyboardButton(text="📥 ডাউনলোড কিভাবে করবেন", url="https://t.me/SakibMovieBox/62")],
         [types.InlineKeyboardButton(text="🚀 Join Channel", url=tg_link)],
         [types.InlineKeyboardButton(text="🔴 18+ Channel", url=link_18)],
@@ -1385,6 +1398,7 @@ async def web_ui():
                 <div id="detailCats" style="margin-bottom: 15px;"></div>
                 <div class="banner-slot" id="bannerDetail">__BANNER_DETAIL__</div>
                 <div id="fileButtonsContainer"></div>
+                <button class="dl-file-btn unlocked" style="background: linear-gradient(45deg, #2563eb, #1e40af);" onclick="shareCurrentMovie()"><span><i class="fa-solid fa-share-nodes"></i> 🔗 লিংক কপি করে শেয়ার করুন</span></button>
                 <div class="banner-slot" id="bannerDetailBottom">__BANNER_DETAIL_BOTTOM__</div>
             </div>
         </div>
@@ -1440,7 +1454,7 @@ async def web_ui():
             let uid = tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : 0; 
             let isUserVip = false; 
             let isAdmin = false; // Admin Variable
-            let activeCat = "Home"; let userFavs = []; let active18Btn = null; let activeFileId = null; let activeIsAdult = false; let adStartTime = 0; let adOpensDone = 0; let currentViewMovies = [];
+            let activeCat = "Home"; let userFavs = []; let active18Btn = null; let activeFileId = null; let activeIsAdult = false; let adStartTime = 0; let adOpensDone = 0; let currentViewMovies = []; let BOT_USER = "__BOT_USER__"; let currentDetailId = "";
             let homeCurrentPage = 1;
             let searchCurrentPage = 1;
             let trendingMovies = []; 
@@ -1621,6 +1635,7 @@ async def web_ui():
             function openDetail(index) { 
                 let m = currentViewMovies[index]; 
                 if(!m) return; 
+                currentDetailId = (m.files && m.files[0] && m.files[0].id) ? m.files[0].id : (m._id || '');
                 document.getElementById('detailImg').src = `/api/image/${m.photo_id}`; 
                 // Fix for "undefined" title
                 document.getElementById('detailTitle').innerText = m.title || 'Unknown Movie'; 
@@ -1644,6 +1659,22 @@ async def web_ui():
                 
                 document.getElementById('fileButtonsContainer').innerHTML = btnsHtml; 
                 document.getElementById('detailModal').style.display = 'flex'; 
+            }
+            
+            // শেয়ার ডিপ-লিংক: t.me/<bot>?startapp=<movieId> খুললেই সরাসরি ওই মুভির ডাউনলোড পেজ
+            function openDetailById(mid) {
+                fetch('/api/movie/' + mid + '?uid=' + uid).then(function(r){ return r.json(); }).then(function(res) {
+                    if(!res || !res.ok || !res.movie) { tg.showAlert('😢 মুভিটা খুঁজে পাওয়া যায়নি! হোম পেজে খুঁজে দেখো।'); return; }
+                    currentViewMovies = [res.movie];
+                    openDetail(0);
+                }).catch(function(e) {});
+            }
+            function shareCurrentMovie() {
+                if(!currentDetailId) return;
+                let shareLink = 'https://t.me/' + BOT_USER + '?startapp=' + currentDetailId;
+                const done = function(){ try { tg.showAlert('✅ লিংক কপি হয়েছে! 🔥\\n\\nবন্ধুদের পাঠাও — লিংকে ক্লিক করতেই সরাসরি এই মুভির ডাউনলোড পেজে চলে আসবে।'); } catch(e) {} };
+                if(navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(shareLink).then(done, function(){ tg.showAlert(shareLink); }); }
+                else { tg.showAlert(shareLink); }
             }
             
             function handleFileClick(fileId, isFree, isAdult) {
@@ -1750,6 +1781,11 @@ async def web_ui():
             if(successOfferBtn && !(ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length)) successOfferBtn.style.display = 'none';
             renderSponsorBtns();
             fetchUserInfo(); loadHomeMovies(1); loadFavorites(); loadTrending();
+            // শেয়ার ডিপ-লিংক সাপোর্ট: ?startapp=<movieId> দিয়ে অ্যাপ খুললে সরাসরি ওই মুভির ডাউনলোড পেজ
+            try {
+                let startPayload = tg.initDataUnsafe && tg.initDataUnsafe.start_param ? String(tg.initDataUnsafe.start_param).trim() : '';
+                if(startPayload && /^[0-9a-fA-F]{24}$/.test(startPayload)) { setTimeout(function(){ openDetailById(startPayload); }, 900); }
+            } catch(e) {}
         </script>
     </body></html>'''
     
@@ -1762,6 +1798,7 @@ async def web_ui():
     html_code = html_code.replace("__BANNER_DETAIL_BOTTOM__", banner_detail_bottom)
     html_code = html_code.replace("__BANNER_SUCCESS__", banner_success)
     html_code = html_code.replace("__BANNER_PROFILE__", banner_profile)
+    html_code = html_code.replace("__BOT_USER__", BOT_USER)
     return HTMLResponse(html_code)
 
 # ==========================================
@@ -1830,6 +1867,28 @@ async def get_random_movie():
     except Exception as e:
         return {"movie": None}
 
+@app.get("/api/movie/{movie_id}")
+async def get_movie_by_id(movie_id: str, uid: int = 0):
+    # শেয়ার ডিপ-লিংকের জন্য: এক ফাইলের id দিলে পুরো মুভি (একই টাইটেলের সব পার্টসহ) ফেরত দেয়
+    try:
+        mv = await db.movies.find_one({"_id": ObjectId(movie_id)})
+    except Exception:
+        return {"ok": False}
+    if not mv: return {"ok": False}
+    unlocked_ids = []
+    if uid != 0:
+        time_limit = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+        async for u in db.user_unlocks.find({"user_id": uid, "unlocked_at": {"$gt": time_limit}}): unlocked_ids.append(u["movie_id"])
+    parts = await db.movies.find({"title": mv.get("title")}).sort("created_at", 1).to_list(50)
+    files = []
+    for p in parts:
+        pid = str(p["_id"])
+        files.append({"id": pid, "quality": p.get("quality", "Main"), "is_unlocked": pid in unlocked_ids})
+    movie_out = {"_id": str(mv["_id"]), "title": mv.get("title"), "photo_id": mv.get("photo_id"), "year": mv.get("year"), "categories": mv.get("categories", []), "files": files, "is_adult": "Adult Content" in mv.get("categories", [])}
+    if not files:
+        movie_out["quality"] = mv.get("quality", "Full Movie")
+    return {"ok": True, "movie": movie_out}
+
 @app.get("/api/image/{photo_id}")
 async def get_image(photo_id: str):
     try:
@@ -1892,18 +1951,22 @@ async def send_file(d: SendRequestModel):
             else:
                 caption = base_caption + f"\n\n⏳ সতর্কতা: সিকিউরিটির জন্য এই ভিডিওটি {del_minutes} মিনিট পর অটোমেটিক ডিলিট হয়ে যাবে!"
             
+            # শেয়ার ডিপ-লিংক বাটন: ফাইল মেসেজেই লিংক থাকবে, যে কেউ ক্লিক করলে সরাসরি ওই মুভির ডাউনলোড পেজে
+            file_kb = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🔗 শেয়ার লিংক — ক্লিক করলেই এই মুভির ডাউনলোড পেজ", url=f"https://t.me/{BOT_USER}?startapp={d.movieId}")],
+            ])
             sent_msg = None
             try:
                 if m.get("file_type") == "video": 
-                    sent_msg = await bot.send_video(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected)
+                    sent_msg = await bot.send_video(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected, reply_markup=file_kb)
                 else: 
-                    sent_msg = await bot.send_document(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected)
+                    sent_msg = await bot.send_document(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected, reply_markup=file_kb)
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after + 1)
                 if m.get("file_type") == "video": 
-                    sent_msg = await bot.send_video(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected)
+                    sent_msg = await bot.send_video(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected, reply_markup=file_kb)
                 else: 
-                    sent_msg = await bot.send_document(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected)
+                    sent_msg = await bot.send_document(d.userId, m['file_id'], caption=caption, parse_mode="HTML", protect_content=is_protected, reply_markup=file_kb)
             
             if sent_msg:
                 await db.movies.update_one({"_id": ObjectId(d.movieId)}, {"$inc": {"clicks": 1}})
