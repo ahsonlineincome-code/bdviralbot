@@ -263,6 +263,58 @@ async def start_cmd(message: types.Message, state: FSMContext):
     else:
         await db.users.update_one({"user_id": uid}, {"$set": {"first_name": message.from_user.first_name}})
 
+    # 🔥 শেয়ার ডিপ-লিংক অটো-ডেলিভারি: t.me/<bot>?start=<movieId> — লিংকে ক্লিক করে START চাপলেই
+    # মুভির ফাইল সরাসরি চ্যাটে চলে আসবে (কোনো প্রম্পট নেই, ওয়েব অ্যাপে ঢুকতে হবে না)।
+    # START চাপতেই Telegram ইউজারকে রেজিস্টার্ড করে ফেলে, তাই সে এখানেই কাউন্টেড ইউজার হয়ে যায়।
+    args_s = message.text.split(" ")
+    payload_s = args_s[1].strip() if len(args_s) > 1 else ""
+    mv_s = None
+    if payload_s and len(payload_s) == 24:
+        try:
+            mv_s = await db.movies.find_one({"_id": ObjectId(payload_s)})
+        except Exception:
+            mv_s = None
+    if mv_s:
+        try:
+            parts_s = await db.movies.find({"title": mv_s.get("title")}).sort("created_at", 1).to_list(10)
+            total_s = len(parts_s) or 1
+            protect_cfg_s = await db.settings.find_one({"id": "protect_content"})
+            is_protected_s = protect_cfg_s.get("status", False) if protect_cfg_s else False
+            time_cfg_s = await db.settings.find_one({"id": "del_time"})
+            del_minutes_s = time_cfg_s['minutes'] if time_cfg_s else 60
+            tg_cfg_s = await db.settings.find_one({"id": "tg_link"})
+            tg_link_s = tg_cfg_s.get("url", "https://t.me/addlist/MwbWNafSFK4yZjhl") if tg_cfg_s else "https://t.me/addlist/MwbWNafSFK4yZjhl"
+            u_doc_s = await db.users.find_one({"user_id": uid})
+            is_vip_s = bool(u_doc_s and u_doc_s.get("vip_until", now - datetime.timedelta(days=1)) > now)
+            f_rows_s = [[types.InlineKeyboardButton(text="🔗 শেয়ার লিংক — যে কেউ ক্লিক করলে ফাইল অটো পাবে", url=f"https://t.me/{BOT_USER}?start={str(mv_s['_id'])}")]]
+            if APP_URL:
+                f_rows_s.append([types.InlineKeyboardButton(text="🎬 আরো মুভি দেখুন", web_app=types.WebAppInfo(url=APP_URL))])
+            f_kb_s = types.InlineKeyboardMarkup(inline_keyboard=f_rows_s)
+            for idx_s, p_s in enumerate(parts_s, 1):
+                cap_s = f"🎥 <b>{p_s.get('title')} [{p_s.get('quality', '')}]</b>"
+                if total_s > 1: cap_s += f"\n📦 Part {idx_s}/{total_s}"
+                cap_s += f"\n\n📥 Join: {tg_link_s}"
+                if is_vip_s:
+                    cap_s += "\n\n💎 VIP সুবিধা: এই ফাইলটি কখনো ডিলিট হবে না!"
+                else:
+                    cap_s += f"\n\n⏳ সতর্কতা: সিকিউরিটির জন্য এই ভিডিওটি {del_minutes_s} মিনিট পর অটোমেটিক ডিলিট হয়ে যাবে!"
+                try:
+                    if p_s.get("file_type") == "video":
+                        sent_s = await bot.send_video(uid, p_s["file_id"], caption=cap_s, parse_mode="HTML", protect_content=is_protected_s, reply_markup=f_kb_s)
+                    else:
+                        sent_s = await bot.send_document(uid, p_s["file_id"], caption=cap_s, parse_mode="HTML", protect_content=is_protected_s, reply_markup=f_kb_s)
+                    await db.movies.update_one({"_id": p_s["_id"]}, {"$inc": {"clicks": 1}})
+                    await db.user_unlocks.update_one({"user_id": uid, "movie_id": str(p_s["_id"])}, {"$set": {"unlocked_at": now}}, upsert=True)
+                    if not is_vip_s and sent_s:
+                        await db.auto_delete.insert_one({"chat_id": uid, "message_id": sent_s.message_id, "delete_at": now + datetime.timedelta(minutes=del_minutes_s)})
+                except TelegramRetryAfter as e_s:
+                    await asyncio.sleep(e_s.retry_after + 1)
+                except Exception as send_err_s:
+                    print(f"Start-delivery error: {send_err_s}")
+            return  # ফাইলই মূল ডেলিভারি — ওয়েলকাম মেসেজ স্কিপ
+        except Exception as e_s:
+            print(f"Start payload error: {e_s}")
+
     tg_cfg = await db.settings.find_one({"id": "tg_link"})
     tg_link = tg_cfg.get("url", "https://t.me/addlist/MwbWNafSFK4yZjhl") if tg_cfg else "https://t.me/addlist/MwbWNafSFK4yZjhl"
     link_18 = "https://t.me/+W5V9-mn08jMyYTE1"
@@ -616,7 +668,7 @@ async def action_new_broadcast(c: types.CallbackQuery, state: FSMContext):
     if LOG_CHANNEL_ID:
         try:
             log_kb = [
-                [types.InlineKeyboardButton(text="🎬 Watch Now", url=f"https://t.me/{BOT_USER}?startapp={movie_id}")],
+                [types.InlineKeyboardButton(text="🎬 Watch Now", url=f"https://t.me/{BOT_USER}?start={movie_id}")],
                 [types.InlineKeyboardButton(text="📥 ডাউনলোড কিভাবে করবেন", url="https://t.me/SakibMovieBox/62")],
                 [types.InlineKeyboardButton(text="📝 Request Movie", url="https://t.me/requestmoviebox")]
             ]
@@ -1673,8 +1725,8 @@ async def web_ui():
             }
             function shareCurrentMovie() {
                 if(!currentDetailId) return;
-                let shareLink = 'https://t.me/' + BOT_USER + '?startapp=' + currentDetailId;
-                const done = function(){ try { tg.showAlert('✅ লিংক কপি হয়েছে! 🔥\\n\\nবন্ধুদের পাঠাও — লিংকে ক্লিক করতেই সরাসরি এই মুভির ডাউনলোড পেজে চলে আসবে।'); } catch(e) {} };
+                let shareLink = 'https://t.me/' + BOT_USER + '?start=' + currentDetailId;
+                const done = function(){ try { tg.showAlert('✅ লিংক কপি হয়েছে! 🔥\\n\\nবন্ধুদের পাঠাও — সে লিংকে ক্লিক করে START চাপলেই মুভির ফাইল সরাসরি তার চ্যাটে চলে আসবে!'); } catch(e) {} };
                 if(navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(shareLink).then(done, function(){ tg.showAlert(shareLink); }); }
                 else { tg.showAlert(shareLink); }
             }
@@ -1965,9 +2017,9 @@ async def send_file(d: SendRequestModel):
             else:
                 caption = base_caption + f"\n\n⏳ সতর্কতা: সিকিউরিটির জন্য এই ভিডিওটি {del_minutes} মিনিট পর অটোমেটিক ডিলিট হয়ে যাবে!"
             
-            # শেয়ার ডিপ-লিংক বাটন: ফাইল মেসেজেই লিংক থাকবে, যে কেউ ক্লিক করলে সরাসরি ওই মুভির ডাউনলোড পেজে
+            # শেয়ার ডিপ-লিংক বাটন: ফাইল মেসেজেই লিংক থাকবে — যে কেউ ক্লিক করে START চাপলে ফাইল অটো পাবে
             file_kb = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🔗 শেয়ার লিংক — ক্লিক করলেই এই মুভির ডাউনলোড পেজ", url=f"https://t.me/{BOT_USER}?startapp={d.movieId}")],
+                [types.InlineKeyboardButton(text="🔗 শেয়ার লিংক — যে কেউ ক্লিক করলে ফাইল অটো পাবে", url=f"https://t.me/{BOT_USER}?start={d.movieId}")],
             ])
             sent_msg = None
             try:
