@@ -263,9 +263,10 @@ async def start_cmd(message: types.Message, state: FSMContext):
     else:
         await db.users.update_one({"user_id": uid}, {"$set": {"first_name": message.from_user.first_name}})
 
-    # 🔥 শেয়ার ডিপ-লিংক অটো-ডেলিভারি: t.me/<bot>?start=<movieId> — লিংকে ক্লিক করে START চাপলেই
-    # মুভির ফাইল সরাসরি চ্যাটে চলে আসবে (কোনো প্রম্পট নেই, ওয়েব অ্যাপে ঢুকতে হবে না)।
-    # START চাপতেই Telegram ইউজারকে রেজিস্টার্ড করে ফেলে, তাই সে এখানেই কাউন্টেড ইউজার হয়ে যায়।
+    # 🔥 শেয়ার ডিপ-লিংক স্মার্ট-রাউট: t.me/<bot>?start=<movieId>
+    # নতুন ইউজার → START বাটন দেখবে (চাপলেই রেজিস্টার্ড+কাউন্ট) | পুরনো ইউজার → Telegram নিজেই /start অটো-সেন্ড করবে
+    # দুই ক্ষেত্রেই বট সাথে সাথে মুভির বাটন-মেসেজ পাঠাবে → টেপ করতেই অ্যাপের ওই মুভির পেজে → গেট (অ্যাড) → ফাইল
+    # ফাইল সরাসরি পাঠানো হয় না — অ্যাড গেট অক্ষত থাকে, ইনকাম বাড়ে।
     args_s = message.text.split(" ")
     payload_s = args_s[1].strip() if len(args_s) > 1 else ""
     mv_s = None
@@ -276,42 +277,14 @@ async def start_cmd(message: types.Message, state: FSMContext):
             mv_s = None
     if mv_s:
         try:
-            parts_s = await db.movies.find({"title": mv_s.get("title")}).sort("created_at", 1).to_list(10)
-            total_s = len(parts_s) or 1
-            protect_cfg_s = await db.settings.find_one({"id": "protect_content"})
-            is_protected_s = protect_cfg_s.get("status", False) if protect_cfg_s else False
-            time_cfg_s = await db.settings.find_one({"id": "del_time"})
-            del_minutes_s = time_cfg_s['minutes'] if time_cfg_s else 60
-            tg_cfg_s = await db.settings.find_one({"id": "tg_link"})
-            tg_link_s = tg_cfg_s.get("url", "https://t.me/addlist/MwbWNafSFK4yZjhl") if tg_cfg_s else "https://t.me/addlist/MwbWNafSFK4yZjhl"
-            u_doc_s = await db.users.find_one({"user_id": uid})
-            is_vip_s = bool(u_doc_s and u_doc_s.get("vip_until", now - datetime.timedelta(days=1)) > now)
-            f_rows_s = [[types.InlineKeyboardButton(text="🔗 শেয়ার লিংক — যে কেউ ক্লিক করলে ফাইল অটো পাবে", url=f"https://t.me/{BOT_USER}?start={str(mv_s['_id'])}")]]
-            if APP_URL:
-                f_rows_s.append([types.InlineKeyboardButton(text="🎬 আরো মুভি দেখুন", web_app=types.WebAppInfo(url=APP_URL))])
-            f_kb_s = types.InlineKeyboardMarkup(inline_keyboard=f_rows_s)
-            for idx_s, p_s in enumerate(parts_s, 1):
-                cap_s = f"🎥 <b>{p_s.get('title')} [{p_s.get('quality', '')}]</b>"
-                if total_s > 1: cap_s += f"\n📦 Part {idx_s}/{total_s}"
-                cap_s += f"\n\n📥 Join: {tg_link_s}"
-                if is_vip_s:
-                    cap_s += "\n\n💎 VIP সুবিধা: এই ফাইলটি কখনো ডিলিট হবে না!"
-                else:
-                    cap_s += f"\n\n⏳ সতর্কতা: সিকিউরিটির জন্য এই ভিডিওটি {del_minutes_s} মিনিট পর অটোমেটিক ডিলিট হয়ে যাবে!"
-                try:
-                    if p_s.get("file_type") == "video":
-                        sent_s = await bot.send_video(uid, p_s["file_id"], caption=cap_s, parse_mode="HTML", protect_content=is_protected_s, reply_markup=f_kb_s)
-                    else:
-                        sent_s = await bot.send_document(uid, p_s["file_id"], caption=cap_s, parse_mode="HTML", protect_content=is_protected_s, reply_markup=f_kb_s)
-                    await db.movies.update_one({"_id": p_s["_id"]}, {"$inc": {"clicks": 1}})
-                    await db.user_unlocks.update_one({"user_id": uid, "movie_id": str(p_s["_id"])}, {"$set": {"unlocked_at": now}}, upsert=True)
-                    if not is_vip_s and sent_s:
-                        await db.auto_delete.insert_one({"chat_id": uid, "message_id": sent_s.message_id, "delete_at": now + datetime.timedelta(minutes=del_minutes_s)})
-                except TelegramRetryAfter as e_s:
-                    await asyncio.sleep(e_s.retry_after + 1)
-                except Exception as send_err_s:
-                    print(f"Start-delivery error: {send_err_s}")
-            return  # ফাইলই মূল ডেলিভারি — ওয়েলকাম মেসেজ স্কিপ
+            kb_s = [
+                [types.InlineKeyboardButton(text="🎬 ডাউনলোড পেজ খুলুন", url=f"https://t.me/{BOT_USER}?startapp={str(mv_s['_id'])}")],
+                [types.InlineKeyboardButton(text="🔗 শেয়ার লিংক — বন্ধুকে পাঠাও", url=f"https://t.me/{BOT_USER}?start={str(mv_s['_id'])}")],
+            ]
+            text_s = (f"🎬 <b>{mv_s.get('title')}</b> [{mv_s.get('quality', '')}]\n\n"
+                      "👇 নিচের বাটনে টেপ করো — সরাসরি এই মুভির ডাউনলোড পেজ খুলে যাবে, সেখান থেকেই ফাইল ডাউনলোড করতে পারবে!")
+            await message.answer(text_s, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb_s), parse_mode="HTML")
+            return  # মুভির বাটন-মেসেজই মূল রেসপন্স — ওয়েলকাম স্কিপ
         except Exception as e_s:
             print(f"Start payload error: {e_s}")
 
@@ -1441,7 +1414,7 @@ async def web_ui():
 
         <div id="ageModal" class="modal"><div class="modal-content age-box"><h2 style="color:#ef4444;">⚠️ বয়স সীমাবদ্ধতা</h2><p style="color:#cbd5e1; margin:15px 0;">আপনার বয়স কি ১৮ বছরের বেশি?</p><button class="age-btn age-yes" onclick="access18()">হ্যাঁ, আমি ১৮+</button><button class="age-btn age-no" onclick="closeModal('ageModal')">না</button></div></div>
 
-        <div id="startModal" class="modal"><div class="modal-content age-box"><h2 style="color:#f59e0b;">🔔 এক ধাপ বাকি!</h2><p style="color:#cbd5e1; margin:15px 0;">ফাইল পেতে হলে আগে বটে <b style="color:#22c55e;">START</b> দিতে হবে (Telegram-এর নিয়ম)। নিচের বাটনে টেপ করো → START চাপো → তারপর অ্যাপে ফিরে এসে আবার ডাউনলোড টেপো।</p><button class="age-btn age-yes" onclick="tg.openTelegramLink('https://t.me/__BOT_USER__')">▶ এখন START দিন</button><button class="age-btn age-no" onclick="closeModal('startModal')">পরে দেখবো</button></div></div>
+        <div id="startModal" class="modal"><div class="modal-content age-box"><h2 style="color:#f59e0b;">🔔 এক ধাপ বাকি!</h2><p style="color:#cbd5e1; margin:15px 0;">ফাইল পেতে হলে আগে বটে <b style="color:#22c55e;">START</b> দিতে হবে (Telegram-এর নিয়ম)। নিচের বাটনে টেপ করো → START চাপো → বট থেকে আসা বাটনে টেপ করলেই সরাসরি এই মুভির ডাউনলোড পেজে ফিরে আসবে।</p><button class="age-btn age-yes" onclick="openStartChat()">▶ এখন START দিন</button><button class="age-btn age-no" onclick="closeModal('startModal')">পরে দেখবো</button></div></div>
 
         <div id="detailModal" class="modal">
             <div class="modal-content">
@@ -1750,6 +1723,7 @@ async def web_ui():
                 }).catch(function(e) { cb(true); });
             }
             function showStartPrompt() { document.getElementById('startModal').style.display = 'flex'; }
+            function openStartChat() { closeModal('startModal'); try { tg.openTelegramLink('https://t.me/' + BOT_USER + '?start=' + (activeFileId || '')); } catch(e) {} }
             function pickAdLink() {
                 // সব অ্যাড ১৮+: শুধু এডাল্ট লিংক লিস্ট ব্যবহার হয়
                 if(ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length > 0) return ADULT_DIRECT_LINKS[Math.floor(Math.random() * ADULT_DIRECT_LINKS.length)];
