@@ -1389,6 +1389,8 @@ async def web_ui():
 
         <div id="ageModal" class="modal"><div class="modal-content age-box"><h2 style="color:#ef4444;">⚠️ বয়স সীমাবদ্ধতা</h2><p style="color:#cbd5e1; margin:15px 0;">আপনার বয়স কি ১৮ বছরের বেশি?</p><button class="age-btn age-yes" onclick="access18()">হ্যাঁ, আমি ১৮+</button><button class="age-btn age-no" onclick="closeModal('ageModal')">না</button></div></div>
 
+        <div id="startModal" class="modal"><div class="modal-content age-box"><h2 style="color:#f59e0b;">🔔 এক ধাপ বাকি!</h2><p style="color:#cbd5e1; margin:15px 0;">ফাইল পেতে হলে আগে বটে <b style="color:#22c55e;">START</b> দিতে হবে (Telegram-এর নিয়ম)। নিচের বাটনে টেপ করো → START চাপো → তারপর অ্যাপে ফিরে এসে আবার ডাউনলোড টেপো।</p><button class="age-btn age-yes" onclick="tg.openTelegramLink('https://t.me/__BOT_USER__')">▶ এখন START দিন</button><button class="age-btn age-no" onclick="closeModal('startModal')">পরে দেখবো</button></div></div>
+
         <div id="detailModal" class="modal">
             <div class="modal-content">
                 <button class="close-icon" onclick="closeModal('detailModal')"><i class="fa-solid fa-xmark"></i></button>
@@ -1679,11 +1681,23 @@ async def web_ui():
             
             function handleFileClick(fileId, isFree, isAdult) {
                 activeFileId = fileId; activeIsAdult = isAdult;
-                if(isFree || AD_COUNT <= 0) { sendFileRequest(fileId); return; }
-                if(!(ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length)) { sendFileRequest(fileId); return; }
-                closeModal('detailModal'); adOpensDone = 0; resetAdModal();
-                document.getElementById('adModal').style.display = 'flex';
+                // শেয়ার লিংক থেকে আসা নতুন ইউজার চেক: Telegram নিয়মে বট একবার START না দেওয়া ইউজারকে ফাইল পাঠাতে পারে না
+                ensureRegistered(function(regOk) {
+                    if(!regOk) return;
+                    if(isFree || AD_COUNT <= 0) { sendFileRequest(fileId); return; }
+                    if(!(ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length)) { sendFileRequest(fileId); return; }
+                    closeModal('detailModal'); adOpensDone = 0; resetAdModal();
+                    document.getElementById('adModal').style.display = 'flex';
+                });
             }
+            function ensureRegistered(cb) {
+                // গেট খোলার আগেই চেক — নতুন ইউজার অ্যাড দেখার পরে হতাশ হবে না, আগে START দিয়ে নিবে
+                fetch('/api/user/' + uid).then(function(r){ return r.json(); }).then(function(d) {
+                    if(d && d.exists === false) { showStartPrompt(); cb(false); }
+                    else { cb(true); }
+                }).catch(function(e) { cb(true); });
+            }
+            function showStartPrompt() { document.getElementById('startModal').style.display = 'flex'; }
             function pickAdLink() {
                 // সব অ্যাড ১৮+: শুধু এডাল্ট লিংক লিস্ট ব্যবহার হয়
                 if(ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length > 0) return ADULT_DIRECT_LINKS[Math.floor(Math.random() * ADULT_DIRECT_LINKS.length)];
@@ -1808,8 +1822,8 @@ async def web_ui():
 async def get_user_info(uid: int):
     user = await db.users.find_one({"user_id": uid})
     if not user:
-        # ইউজার না থাকলে ডিফল্ট রিটার্ন
-        return {"vip": False, "is_admin": False}
+        # ইউজার না থাকলে ডিফল্ট রিটার্ন (exists=False মানে এই ইউজার এখনো বটে START দায়নি)
+        return {"vip": False, "is_admin": False, "exists": False}
     
     # ভিআইপি চেক
     is_vip = user.get("vip_until", datetime.datetime.min) > datetime.datetime.utcnow()
