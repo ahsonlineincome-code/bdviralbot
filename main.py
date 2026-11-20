@@ -106,17 +106,13 @@ async def load_banned_users():
 # প্রি-সেট অ্যাড কনফিগ (মালিকের লিংক/ব্যানার — ডিপ্লয়ের সাথে সাথেই চালু, কমান্ড লাগবে না)
 # ==========================================
 # 🎲 অ্যাডাল্ট (18+) অ্যাড লিংক পুল — এই ৫টা লিংক মিনি অ্যাপ গেট/সাকসেস অফার/ব্রডকাস্টে র‍্যান্ডমলি চলবে
+# (মালিক /addadultlink দিয়ে যত খুশি নতুন লিংক যোগ করতে পারবেন — সবগুলোর উপর থেকেই র‍্যান্ডম আসবে)
 DEFAULT_ADULT_LINKS = [
     "https://auctionr.org/4/1b6df569ebc094e3e8e592d2fd017b4f",
     "https://auctionr.org/4/ae2d07d4c0488d06e6aec709d40d437f",
     "https://auctionr.org/4/ef5b10414fe8fdd3f602e74bcdd4225c",
     "https://auctionr.org/4/9a420739bd309e36f6535c4bcad2d3c9",
     "https://auctionr.org/4/b51d4b4d19155b12b384cdd6f2b31daa",
-]
-# আগের প্রি-সেট (শুধু মাইগ্রেশন চেকের জন্য — ডাটাবেজে এই পুরনো ২টা লিংক বসা থাকলে উপরের নতুন ৫টা দিয়ে বদলে যাবে)
-OLD_ADULT_LINKS_PRESET = [
-    "https://auctionr.org/4/1b6df569ebc094e3e8e592d2fd017b4f",
-    "https://splendid-garage.com/M9HFwA",
 ]
 DEFAULT_BANNER_CODE = """<script>
   atOptions = {
@@ -144,14 +140,22 @@ async def init_db():
     await db.ad_clicks.create_index("clicked_at")
     # প্রি-সেট সিড: ডাটাবেজে সেটিং না থাকলে মালিকের লিংক/ব্যানার/গেট সংখ্যা বসিয়ে দাও
     # (পরে কমান্ড দিয়ে চেঞ্জ করলে ডাটাবেজের মানই চলে — প্রি-সেটের উপরে লেখে)
-    if not await db.settings.find_one({"id": "adult_direct_links"}):
+    # প্রি-সেট সিড + এক-বারের মাইগ্রেশন: ডাটাবেজে যা আছে তার সাথে ডিফল্ট ৫টা লিংক মার্জ হবে (ডুপ্লিকেট বাদ)
+    # এরপর মালিক /addadultlink দিয়ে যত খুশি লিংক যোগ / /deladultlink দিয়ে বাদ করলে সেটাই চলবে —
+    # রিস্টার্টে আর কখনো অটো-বদল হবে না (একবারই মার্জ, তারপর মালিকের লিস্টই ফাইনাল)
+    _adl_cfg = await db.settings.find_one({"id": "adult_direct_links"})
+    _seed_cfg = await db.settings.find_one({"id": "adult_links_seed_v2"})
+    if not _adl_cfg:
         await db.settings.update_one({"id": "adult_direct_links"}, {"$set": {"links": DEFAULT_ADULT_LINKS}}, upsert=True)
-    else:
-        # 🔁 মাইগ্রেশন: আগের প্রি-সেট (২টা লিংক) ডাটাবেজে বসা থাকলে নতুন ৫টা অ্যাডাল্ট লিংক বসিয়ে দাও
-        # (মালিক কমান্ড দিয়ে নিজের লিংক বসিয়ে থাকলে সেটা অক্ষত থাকবে — শুধু পুরনো প্রি-সেট বদলাবে)
-        _adl_cfg = await db.settings.find_one({"id": "adult_direct_links"})
-        if _adl_cfg and _adl_cfg.get("links") == OLD_ADULT_LINKS_PRESET:
-            await db.settings.update_one({"id": "adult_direct_links"}, {"$set": {"links": DEFAULT_ADULT_LINKS}})
+    elif not _seed_cfg:
+        _cur_links = [u for u in (_adl_cfg.get("links", []) or []) if u]
+        _merged = list(_cur_links)
+        for _u in DEFAULT_ADULT_LINKS:
+            if _u not in _merged:
+                _merged.append(_u)
+        await db.settings.update_one({"id": "adult_direct_links"}, {"$set": {"links": _merged}})
+    if not _seed_cfg:
+        await db.settings.update_one({"id": "adult_links_seed_v2"}, {"$set": {"status": True}}, upsert=True)
     if not await db.settings.find_one({"id": "ad_count"}):
         await db.settings.update_one({"id": "ad_count"}, {"$set": {"count": DEFAULT_AD_COUNT}}, upsert=True)
     for _zid in ("banner_home", "banner_detail", "banner_detail_bottom", "banner_success", "banner_profile"):
