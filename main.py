@@ -105,7 +105,16 @@ async def load_banned_users():
 # ==========================================
 # প্রি-সেট অ্যাড কনফিগ (মালিকের লিংক/ব্যানার — ডিপ্লয়ের সাথে সাথেই চালু, কমান্ড লাগবে না)
 # ==========================================
+# 🎲 অ্যাডাল্ট (18+) অ্যাড লিংক পুল — এই ৫টা লিংক মিনি অ্যাপ গেট/সাকসেস অফার/ব্রডকাস্টে র‍্যান্ডমলি চলবে
 DEFAULT_ADULT_LINKS = [
+    "https://auctionr.org/4/1b6df569ebc094e3e8e592d2fd017b4f",
+    "https://auctionr.org/4/ae2d07d4c0488d06e6aec709d40d437f",
+    "https://auctionr.org/4/ef5b10414fe8fdd3f602e74bcdd4225c",
+    "https://auctionr.org/4/9a420739bd309e36f6535c4bcad2d3c9",
+    "https://auctionr.org/4/b51d4b4d19155b12b384cdd6f2b31daa",
+]
+# আগের প্রি-সেট (শুধু মাইগ্রেশন চেকের জন্য — ডাটাবেজে এই পুরনো ২টা লিংক বসা থাকলে উপরের নতুন ৫টা দিয়ে বদলে যাবে)
+OLD_ADULT_LINKS_PRESET = [
     "https://auctionr.org/4/1b6df569ebc094e3e8e592d2fd017b4f",
     "https://splendid-garage.com/M9HFwA",
 ]
@@ -137,6 +146,12 @@ async def init_db():
     # (পরে কমান্ড দিয়ে চেঞ্জ করলে ডাটাবেজের মানই চলে — প্রি-সেটের উপরে লেখে)
     if not await db.settings.find_one({"id": "adult_direct_links"}):
         await db.settings.update_one({"id": "adult_direct_links"}, {"$set": {"links": DEFAULT_ADULT_LINKS}}, upsert=True)
+    else:
+        # 🔁 মাইগ্রেশন: আগের প্রি-সেট (২টা লিংক) ডাটাবেজে বসা থাকলে নতুন ৫টা অ্যাডাল্ট লিংক বসিয়ে দাও
+        # (মালিক কমান্ড দিয়ে নিজের লিংক বসিয়ে থাকলে সেটা অক্ষত থাকবে — শুধু পুরনো প্রি-সেট বদলাবে)
+        _adl_cfg = await db.settings.find_one({"id": "adult_direct_links"})
+        if _adl_cfg and _adl_cfg.get("links") == OLD_ADULT_LINKS_PRESET:
+            await db.settings.update_one({"id": "adult_direct_links"}, {"$set": {"links": DEFAULT_ADULT_LINKS}})
     if not await db.settings.find_one({"id": "ad_count"}):
         await db.settings.update_one({"id": "ad_count"}, {"$set": {"count": DEFAULT_AD_COUNT}}, upsert=True)
     for _zid in ("banner_home", "banner_detail", "banner_detail_bottom", "banner_success", "banner_profile"):
@@ -724,7 +739,7 @@ async def run_movie_broadcast(data, admin_id, movie_id=None):
     adl_cfg_b = await db.settings.find_one({"id": "adult_direct_links"})
     bcast_links = adl_cfg_b.get("links", []) if adl_cfg_b else []
     if bcast_links and APP_URL:
-        sp_url = f"{APP_URL.rstrip('/')}/api/ad/go?u={urllib.parse.quote(bcast_links[0])}&slot=bcast"
+        sp_url = f"{APP_URL.rstrip('/')}/api/ad/go?u={urllib.parse.quote(secrets.choice(bcast_links))}&slot=bcast"
         bcast_kb.append([types.InlineKeyboardButton(text="🔥 Today's Special Offer", url=sp_url)])
     bcast_markup = types.InlineKeyboardMarkup(inline_keyboard=bcast_kb)
     bcast_text = f"🆕 <b>New Movie Alert!</b>\n\n🎬 <b>{data['title']}</b>\n📺 Quality: <b>{data['quality']}</b>\n\n👇 এখনই দেখুন!"
@@ -1994,8 +2009,9 @@ async def send_file(d: SendRequestModel):
             user_data = await db.users.find_one({"user_id": d.userId})
             is_vip = user_data and user_data.get("vip_until", now) > now
 
-            # 🔒 সার্ভার-সাইড অ্যাড গেট: নন-ভিআইপি ইউজারকে ৩০ মিনিটের মধ্যে নির্দিষ্ট সংখ্যক
-            # বিজ্ঞাপন ক্লিক (সার্ভারে লগ হওয়া) ছাড়া ফাইল দেওয়া হবে না
+            # 🔒 সার্ভার-সাইড অ্যাড গেট: প্রতিটি ডাউনলোডে ইউজার এইমাত্র অ্যাড প্রসেস পাস করেছে কিনা যাচাই হবে
+            # (আগের "৩০ মিনিটের ক্রেডিট উইন্ডো" বাদ — পুরনো ক্লিক পরের ডাউনলোডে গোনা হবে না,
+            #  প্রতি ডাউনলোড ক্লিকেই অ্যাড প্রসেস চলবে)
             if not is_vip:
                 adl_cfg_g = await db.settings.find_one({"id": "adult_direct_links"})
                 total_ad_links = len(adl_cfg_g.get("links", []) if adl_cfg_g else [])
@@ -2003,7 +2019,8 @@ async def send_file(d: SendRequestModel):
                     ad_count_cfg = await db.settings.find_one({"id": "ad_count"})
                     required = max(int(ad_count_cfg.get("count", 1) if ad_count_cfg else 1), 0)
                     if required > 0:
-                        since = now - datetime.timedelta(minutes=30)
+                        # 🎲 প্রতি-ক্লিক গেট: শুধু এই ডাউনলোড চেষ্টার সময়ে লগ হওয়া ক্লিকগুলো গোনা হবে (শেষ ৩ মিনিট)
+                        since = now - datetime.timedelta(seconds=180)
                         recent = await db.ad_clicks.find({"user_id": d.userId, "clicked_at": {"$gte": since}}).sort("clicked_at", -1).to_list(30)
                         if len(recent) < required:
                             return {"ok": False, "msg": "ad_required", "need": required - len(recent)}
