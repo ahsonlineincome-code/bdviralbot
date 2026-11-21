@@ -1453,7 +1453,9 @@ async def web_ui():
                 <a href="https://t.me/+W5V9-mn08jMyYTE1" class="profile-action-btn btn-18-ch" target="_blank">🔴 18+ Channel</a>
                 <a href="#" class="profile-action-btn btn-sax-grp" target="_blank">🔥 Sax Group</a>
                 <div id="sponsorBtns"></div>
-                <div class="banner-slot" id="bannerProfile">__BANNER_PROFILE__</div>
+                <!-- 🧠 CPM: প্রোফাইল ব্যানার খালি — Profile ট্যাব খোলার মুহূর্তে JS দিয়ে মাউন্ট হয় (mountBannerSlot)।
+                     পেজ-লোডে লুকানো সেকশনে ব্যানার লোড হলে ইউজার কিছু না দেখেই "মৃত" ইম্প্রেশন জমে, CPM পড়ে যায়। -->
+                <div class="banner-slot" id="bannerProfile"></div>
             </div>
         </div>
 
@@ -1479,10 +1481,11 @@ async def web_ui():
                 <h2 id="detailTitle" class="detail-title"></h2>
                 <div id="detailMeta" class="detail-meta"></div>
                 <div id="detailCats" style="margin-bottom: 15px;"></div>
-                <div class="banner-slot" id="bannerDetail">__BANNER_DETAIL__</div>
+                <!-- 🧠 CPM: ডিটেইলস ব্যানার খালি — মুভি খোলার মুহূর্তে JS দিয়ে মাউন্ট (লুকানো মোডালে পেজ-লোডে লোড = মৃত ইম্প্রেশন) -->
+                <div class="banner-slot" id="bannerDetail"></div>
                 <div id="fileButtonsContainer"></div>
                 <button class="dl-file-btn unlocked" style="background: linear-gradient(45deg, #2563eb, #1e40af);" onclick="shareCurrentMovie()"><span><i class="fa-solid fa-share-nodes"></i> 🔗 লিংক কপি করে শেয়ার করুন</span></button>
-                <div class="banner-slot" id="bannerDetailBottom">__BANNER_DETAIL_BOTTOM__</div>
+                <div class="banner-slot" id="bannerDetailBottom"></div>
             </div>
         </div>
 
@@ -1507,7 +1510,8 @@ async def web_ui():
                 <a href="https://t.me/addlist/MwbWNafSFK4yZjhl" target="_blank" class="join-channel-btn">🚀 Join Channel</a>
                 <button id="successOfferBtn" class="ad-action-btn btn-ad-open" style="background: linear-gradient(45deg, #d97706, #b45309); margin-top: 15px;" onclick="openSuccessOffer()">🔥 আজকের স্পেশাল অফার দেখুন!</button>
                 <button class="dl-file-btn unlocked" onclick="closeModal('successModal'); tg.close();"><i class="fa-solid fa-check"></i> বটে যান</button>
-                <div class="banner-slot" id="bannerSuccess">__BANNER_SUCCESS__</div>
+                <!-- 🧠 CPM: সাকসেস মোডালের ব্যানার খালি — ফাইল পাঠানোর পর মোডাল খুলবে তখনই JS দিয়ে মাউন্ট হয় -->
+                <div class="banner-slot" id="bannerSuccess"></div>
             </div>
         </div>
 
@@ -1554,7 +1558,7 @@ async def web_ui():
                 } catch(e) {} 
             }
             
-            function switchTab(tabName, btnEl) { document.querySelectorAll('.page-section').forEach(function(el) { el.classList.remove('active'); }); document.querySelectorAll('.nav-item').forEach(function(el) { el.classList.remove('active'); }); if(tabName === 'home') { activeCat = 'Home'; homeCurrentPage = 1; document.querySelectorAll('.cat-chip').forEach(function(el) { el.classList.remove('active'); }); var fc = document.querySelector('.cat-chip'); if(fc) fc.classList.add('active'); } document.getElementById('tab' + tabName.charAt(0).toUpperCase() + tabName.slice(1)).classList.add('active'); if(btnEl) btnEl.classList.add('active'); if(tabName === 'home') loadHomeMovies(1); if(tabName === 'fav') loadFavorites(); window.scrollTo({top:0, behavior:'smooth'}); }
+            function switchTab(tabName, btnEl) { document.querySelectorAll('.page-section').forEach(function(el) { el.classList.remove('active'); }); document.querySelectorAll('.nav-item').forEach(function(el) { el.classList.remove('active'); }); if(tabName === 'home') { activeCat = 'Home'; homeCurrentPage = 1; document.querySelectorAll('.cat-chip').forEach(function(el) { el.classList.remove('active'); }); var fc = document.querySelector('.cat-chip'); if(fc) fc.classList.add('active'); } document.getElementById('tab' + tabName.charAt(0).toUpperCase() + tabName.slice(1)).classList.add('active'); if(btnEl) btnEl.classList.add('active'); if(tabName === 'home') loadHomeMovies(1); if(tabName === 'fav') loadFavorites(); if(tabName === 'profile') mountBannerSlot('bannerProfile'); window.scrollTo({top:0, behavior:'smooth'}); }
             function filterCat(cat, btnEl) { activeCat = cat; homeCurrentPage = 1; document.querySelectorAll('.cat-chip').forEach(function(el) { el.classList.remove('active'); }); btnEl.classList.add('active'); loadHomeMovies(1); }
             
             function verify18(btnEl) { active18Btn = btnEl; if(localStorage.getItem('isAdult')) { if(btnEl) filterCat('Adult Content', btnEl); } else { document.getElementById('ageModal').style.display = 'flex'; } }
@@ -1740,8 +1744,10 @@ async def web_ui():
                     btnsHtml = `<button class="dl-file-btn ${isFree ? 'unlocked' : ''}" onclick="handleFileClick('${m._id}', ${isFree ? 'true' : 'false'}, ${isAdult ? 'true' : 'false'})"><span><i class="fa-solid fa-${isFree ? 'lock-open' : 'lock'}"></i> Download ${m.quality || 'Full Movie'}</span></button>`;
                 }
                 
-                document.getElementById('fileButtonsContainer').innerHTML = btnsHtml; 
-                document.getElementById('detailModal').style.display = 'flex'; 
+                document.getElementById('fileButtonsContainer').innerHTML = btnsHtml;
+                // 🧠 CPM: মোডাল খোলার মুহূর্তেই ব্যানার মাউন্ট — ইউজার দেখার মতো ব্যানারই ইম্প্রেশন খাবে
+                mountBannerSlot('bannerDetail'); mountBannerSlot('bannerDetailBottom');
+                document.getElementById('detailModal').style.display = 'flex';
             }
             
             // শেয়ার ডিপ-লিংক: t.me/<bot>?startapp=<movieId> খুললেই সরাসরি ওই মুভির ডাউনলোড পেজ
@@ -1771,6 +1777,35 @@ async def web_ui():
             }
             function showStartPrompt() { document.getElementById('startModal').style.display = 'flex'; }
             function openStartChat() { closeModal('startModal'); try { tg.openTelegramLink('https://t.me/' + BOT_USER + '?start=' + (activeFileId || '')); } catch(e) {} }
+            // 🧠 CPM ফিক্স: লুকানো মোডাল/সেকশনের ব্যানারগুলো (bannerDetail, bannerDetailBottom, bannerSuccess,
+            // bannerProfile) এখন খালি — যে মুহূর্তে ইউজারের চোখে সত্যিই দেখা যাবে, ঠিক তখনই JS দিয়ে srcdoc-iframe
+            // মাউন্ট হয়। আগে পেজ-লোডেই ৪টা ব্যানার লুকানো অবস্থায় লোড হয়ে মৃত ইম্প্রেশন জমত — বিজ্ঞাপনদাতা ওগুলোর
+            // জন্য টাকা দেয় না, তাই ইম্প্রেশন বাড়লেও রেভিনিউ না বাড়িয়ে CPM (রেভিনিউ ÷ ইম্প্রেশন) প্রতিদিন পড়ে যেত।
+            // একই স্লটে আগে বানানো iframe ক্যাশে থেকে রিইউজ হয় (move করলে reload হয় না) → এক সেশনে এক স্লট = এক ইম্প্রেশন।
+            const LAZY_BANNERS = __LAZY_BANNERS_JSON__;
+            const adIframeCache = {};
+            function mountBannerSlot(slotId) {
+                let slot = document.getElementById(slotId); if (!slot) return;
+                let code = LAZY_BANNERS[slotId];
+                if (!code || !String(code).trim()) { slot.innerHTML = ''; return; }
+                let cacheKey = 'banner::' + slotId;
+                let f = adIframeCache[cacheKey];
+                if (!f) {
+                    f = document.createElement('iframe');
+                    f.setAttribute('scrolling', 'no'); f.setAttribute('frameborder', '0');
+                    f.style.cssText = 'border:0;overflow:hidden;width:100%;height:50px;max-width:100%;';
+                    f.srcdoc = "<html><body style='margin:0;padding:0;background:transparent'>" + code + "</body></html>";
+                    // অ্যাড স্ক্রিপ্ট লোড হওয়ার পর ভেতরের ব্যানারের আসল উচ্চতা অনুযায়ী iframe বসানো
+                    let tries = 0;
+                    let rt = setInterval(function() {
+                        tries++;
+                        try { let d = f.contentDocument; if (d && d.body && d.body.scrollHeight > 20) f.style.height = (d.body.scrollHeight + 2) + 'px'; } catch(e) {}
+                        if (tries > 20) clearInterval(rt);
+                    }, 300);
+                    adIframeCache[cacheKey] = f;
+                }
+                if (slot.firstChild !== f) { slot.innerHTML = ''; slot.appendChild(f); }
+            }
             function pickAdLink() {
                 // সব অ্যাড ১৮+: শুধু এডাল্ট লিংক লিস্ট ব্যবহার হয়
                 if(ADULT_DIRECT_LINKS && ADULT_DIRECT_LINKS.length > 0) return ADULT_DIRECT_LINKS[Math.floor(Math.random() * ADULT_DIRECT_LINKS.length)];
@@ -1781,7 +1816,12 @@ async def web_ui():
             function resetAdModal() { adStartTime = 0; const cBtn = document.getElementById('adClickBtn'); cBtn.style.display = 'block'; cBtn.innerText = 'বিজ্ঞাপন খুলুন'; document.getElementById('adVerifyBtn').style.display = 'none'; document.getElementById('adTryAgainBtn').style.display = 'none'; updateAdProgress(); }
             function backToVerify() { document.getElementById('adTryAgainBtn').style.display = 'none'; document.getElementById('adVerifyBtn').style.display = 'block'; }
             
+            let adGateBusy = false;
             function openAdLink() {
+                // 🔁 দ্রুত ডাবল-ট্যাপে একসাথে দুটো অ্যাড লিংক খুলে যাওয়া বন্ধ — ৮০০ মিলিসেকেন্ড গার্ড
+                if (adGateBusy) return;
+                adGateBusy = true;
+                setTimeout(function() { adGateBusy = false; }, 800);
                 let linkToOpen = pickAdLink();
                 if(linkToOpen) { tg.openLink(linkToOpen); logAdClick('dl_gate', linkToOpen); }
                 adOpensDone++;
@@ -1816,26 +1856,33 @@ async def web_ui():
                 }
             }
 
+            let sendingLock = false;
             async function sendFileRequest(fileId) {
+                // 🔁 ডাবল-ট্যাপ গার্ড: "✅ আনলক করুন" বাটন দ্রুত দুইবার চাপলে দুটো /api/send গিয়ে
+                // একই ভিডিও দুইবার চলে আসত (সার্ভারের গেট দুটো রিকোয়েস্টই পাস করাত)। এখন একটাই যাবে।
+                if (sendingLock) return;
+                sendingLock = true;
                 try {
-                    const res = await fetch('/api/send', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({userId: uid, movieId: fileId, initData: INIT_DATA})});
-                    const data = await res.json();
-                    if(data.ok) { closeModal('detailModal'); document.getElementById('successModal').style.display = 'flex'; fetchUserInfo(); }
-                    else if(data.code === 'start_first') {
-                        // নতুন ইউজার: গেট পাস হয়ে গেছে, এখন শুধু বটে START দিতে হবে — START চাপতেই বট ফাইল অটো পাঠাবে
-                        closeModal('detailModal'); showStartPrompt();
-                    }
-                    else if(data.msg === 'ad_required') {
-                        const need = (typeof data.need === 'number') ? data.need : 1;
-                        adOpensDone = Math.max(AD_COUNT - need, 0);
-                        if(need > 0) { tg.showAlert('⚠️ আগে বিজ্ঞাপন দেখা শেষ করুন! আরও ' + need + ' টি বিজ্ঞাপন দেখতে হবে।'); }
-                        else { tg.showAlert('⏳ খুব দ্রুত হয়ে গেছে! আর একটু অপেক্ষা করুন।'); }
-                        resetAdModal();
-                        if(adOpensDone >= AD_COUNT) { document.getElementById('adClickBtn').style.display = 'none'; document.getElementById('adVerifyBtn').style.display = 'block'; }
-                        document.getElementById('adModal').style.display = 'flex';
-                    }
-                    else { tg.showAlert("⚠️ Failed!"); }
-                } catch(e) {}
+                    try {
+                        const res = await fetch('/api/send', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({userId: uid, movieId: fileId, initData: INIT_DATA})});
+                        const data = await res.json();
+                        if(data.ok) { closeModal('detailModal'); mountBannerSlot('bannerSuccess'); document.getElementById('successModal').style.display = 'flex'; fetchUserInfo(); }
+                        else if(data.code === 'start_first') {
+                            // নতুন ইউজার: গেট পাস হয়ে গেছে, এখন শুধু বটে START দিতে হবে — START চাপতেই বট ফাইল অটো পাঠাবে
+                            closeModal('detailModal'); showStartPrompt();
+                        }
+                        else if(data.msg === 'ad_required') {
+                            const need = (typeof data.need === 'number') ? data.need : 1;
+                            adOpensDone = Math.max(AD_COUNT - need, 0);
+                            if(need > 0) { tg.showAlert('⚠️ আগে বিজ্ঞাপন দেখা শেষ করুন! আরও ' + need + ' টি বিজ্ঞাপন দেখতে হবে।'); }
+                            else { tg.showAlert('⏳ খুব দ্রুত হয়ে গেছে! আর একটু অপেক্ষা করুন।'); }
+                            resetAdModal();
+                            if(adOpensDone >= AD_COUNT) { document.getElementById('adClickBtn').style.display = 'none'; document.getElementById('adVerifyBtn').style.display = 'block'; }
+                            document.getElementById('adModal').style.display = 'flex';
+                        }
+                        else { tg.showAlert("⚠️ Failed!"); }
+                    } catch(e) {}
+                } finally { sendingLock = false; }
             }
             async function loadFavorites() { const list = document.getElementById('movieListFav'); list.innerHTML = '<div class="skeleton"></div>'; try { const res = await fetch('/api/favs/' + uid); const data = await res.json(); userFavs = data.map(function(m) { return m._id; }); currentViewMovies = data; list.innerHTML = data.length > 0 ? data.map(function(m, index) { return createMovieCard(m, index); }).join('') : '<p style="text-align:center; color:#64748b; padding:30px;">কোনো ফেভারিট নেই!</p>'; } catch(e) {} }
             async function toggleFav(title, btnEl) { try { const res = await fetch('/api/fav/toggle', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({uid: uid, title: title, initData: INIT_DATA})}); const data = await res.json(); if(data.isFav) { btnEl.classList.add('active'); userFavs.push(title); } else { btnEl.classList.remove('active'); userFavs = userFavs.filter(function(t) { return t !== title; }); } } catch(e) {} }
@@ -1885,10 +1932,12 @@ async def web_ui():
     html_code = html_code.replace("__AD_COUNT__", str(max(int(ad_count), 0)))
     html_code = html_code.replace("__SPONSOR_JSON__", json.dumps(sponsor_buttons))
     html_code = html_code.replace("__BANNER_HOME__", banner_home)
-    html_code = html_code.replace("__BANNER_DETAIL__", banner_detail)
-    html_code = html_code.replace("__BANNER_DETAIL_BOTTOM__", banner_detail_bottom)
-    html_code = html_code.replace("__BANNER_SUCCESS__", banner_success)
-    html_code = html_code.replace("__BANNER_PROFILE__", banner_profile)
+    # 🧠 CPM: বাকি ৪টা ব্যানার জোন (detail/detail_bottom/success/profile) স্ট্যাটিক স্ক্রিপ্ট হিসেবে বসানো হতো —
+    # পেজ খুললেই লুকানো মোডালে লোড হয়ে মৃত ইম্প্রেশন জমত। এখন কোডগুলো JSON আকারে JS-এ যায় (LAZY_BANNERS),
+    # মোডাল/সেকশন খোলার মুহূর্তে mountBannerSlot() iframe বানিয়ে বসায়। '</' এস্কেপ না করলে কোডের ভেতরের
+    # </script> ট্যাগ বাইরের <script> ব্লক তাড়াতাড়ি বন্ধ করে দিত।
+    lazy_banners = {"bannerDetail": banner_detail, "bannerDetailBottom": banner_detail_bottom, "bannerSuccess": banner_success, "bannerProfile": banner_profile}
+    html_code = html_code.replace("__LAZY_BANNERS_JSON__", json.dumps(lazy_banners).replace('</', '<\\/'))
     html_code = html_code.replace("__BOT_USER__", BOT_USER)
     return HTMLResponse(html_code)
 
@@ -2031,6 +2080,11 @@ async def send_file(d: SendRequestModel):
                         # শেষ ক্লিক আর এখনকার মধ্যে কমপক্ষে ১০ সেকেন্ড থাকতে হবে (স্প্যাম ঠেকাতে)
                         if (now - recent[0]["clicked_at"]).total_seconds() < 10:
                             return {"ok": False, "msg": "ad_required", "need": 0}
+                # 🔁 ডাবল-ট্যাপ ডুপ্লিকেট গার্ড: একই ইউজারের একই মুভি মাত্র ১৫ সেকেন্ডের মধ্যে আবার এলে
+                # দ্বিতীয়বার ফাইল পাঠানো হয় না (ক্লায়েন্টকে ok রেসপন্স — ভিডিও একবারই চলে আসবে)
+                dup_unlock = await db.user_unlocks.find_one({"user_id": d.userId, "movie_id": d.movieId, "unlocked_at": {"$gte": now - datetime.timedelta(seconds=15)}})
+                if dup_unlock:
+                    return {"ok": True}
             protect_cfg = await db.settings.find_one({"id": "protect_content"})
             is_protected = protect_cfg.get("status", False) if protect_cfg else False
             time_cfg = await db.settings.find_one({"id": "del_time"})
