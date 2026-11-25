@@ -11,6 +11,7 @@ import secrets
 import json
 import math
 import random
+import re
 
 # ==========================================
 # 🛑 FIX FOR EVENT LOOP ERROR
@@ -21,9 +22,10 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 # ==========================================
 
-from fastapi import FastAPI, Body, Request, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from fastapi import FastAPI, Body, Request, Depends, HTTPException, status, Response
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware  # 💰 ব্যান্ডউইথ-সেভ
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from aiogram import Bot, Dispatcher, types, F
@@ -64,6 +66,8 @@ app.add_middleware(
     allow_methods=["*"], 
     allow_headers=["*"]
 )
+# 💰 ব্যান্ডউইথ-সেভ: HTML/JSON রেসপন্স gzip দিয়ে ৭৫-৮৫% ছোট হয়ে যায় — Render-এর ৫GB কম কাটে
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client['movie_database']
@@ -552,6 +556,15 @@ async def on_startup():
     asyncio.create_task(auto_delete_worker())
     asyncio.create_task(broadcast_queue_worker())
     asyncio.create_task(auto_lock_worker())
+    asyncio.create_task(self_pinger())  # ✅ অ্যান্টি-স্লিপ: রেন্ডার যেন ১৫ মিনিটে ঘুমাতে না পারে
+    # 🖼️ বট-প্রোফাইলের খালি "Description" লাইনে পরিষ্কার বর্ণনা (১ বার, স্টার্টআপে)
+    # 📌 নোট: "X monthly users" ব্যাজটা টেলিগ্রাম নিজেই অটো দেখায় — কোড দিয়ে সেট/সরানোর API নেই;
+    #     আসল অ্যাক্টিভ ইউজার বাড়লে টেলিগ্রাম নিজেই নম্বর বাড়াবে (বড় বটগুলোতেও একই সিস্টেম)।
+    try:
+        await bot.set_my_description("🔥 BD Viral Box — সব কনটেন্ট এক জায়গায়! নিচের Open App চাপুন অথবা START দিন।")
+        await bot.set_my_short_description("🔥 সব কনটেন্ট এক জায়গায় — Open App / START চাপুন!")
+    except Exception as e:
+        print(f"Description set failed: {e}")
 
 # ==========================================
 # 6. Telegram Bot Commands
@@ -1168,7 +1181,7 @@ async def handle_trx_approval(c: types.CallbackQuery):
 # ==========================================
 @app.get("/panel", response_class=HTMLResponse)
 @app.get("/admin_panel", response_class=HTMLResponse)
-async def admin_panel_ui(auth: bool = Depends(verify_admin)):
+async def admin_panel_ui(request: Request, auth: bool = Depends(verify_admin)):
     html_code = r'''
     <!DOCTYPE html>
     <html lang="bn">
@@ -1516,7 +1529,12 @@ async def admin_panel_ui(auth: bool = Depends(verify_admin)):
             setInterval(fetchStats, 60000); setInterval(fetchFunnel, 120000);
         </script>
     </body></html>'''
-    return HTMLResponse(html_code)
+    # 💰 প্যানেলেও ETag-ক্যাশ — বারবার খুললেও ৩০৪ (খালি রেসপন্স), ব্যান্ডউইথ প্রায়-জিরো
+    etag = '"' + hashlib.sha256(html_code.encode("utf-8")).hexdigest()[:32] + '"'
+    _cc = "public, max-age=600, must-revalidate"
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": _cc})
+    return HTMLResponse(html_code, headers={"ETag": etag, "Cache-Control": _cc})
 
 @app.get("/api/admin/stats")
 async def admin_stats(auth: bool = Depends(verify_admin)):
@@ -1606,7 +1624,7 @@ async def get_file_id_for_admin(message: types.Message):
 # 9. Main Web App UI
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
-async def web_ui():
+async def web_ui(request: Request):
     adl_cfg = await db.settings.find_one({"id": "adult_direct_links"}); adult_direct_links = adl_cfg.get('links', []) if adl_cfg else []; adl_json = json.dumps(adult_direct_links)
     # নতুন অ্যাড সিস্টেম: ব্যানার জোন, স্পনসর বাটন ও অ্যাড গেট কাউন্ট
     ac_cfg = await db.settings.find_one({"id": "ad_count"}); ad_count = ac_cfg.get("count", 1) if ac_cfg else 1
@@ -2044,7 +2062,6 @@ async def web_ui():
 
             let tg = window.Telegram.WebApp; tg.expand();
             const ADULT_DIRECT_LINKS = __ADL_JSON__; const SPONSOR_BTNS = __SPONSOR_JSON__; const AD_COUNT = __AD_COUNT__; const AD_WAIT = __AD_WAIT__; const INIT_DATA = tg.initData || "";
-            const TOKEN = "__BOT_TOKEN__";
             let uid = tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : 0; 
             let isUserVip = false; 
             let isAdmin = false; // Admin Variable
@@ -2361,13 +2378,16 @@ async def web_ui():
             async function recoverPendingGate() {
                 let rec = null; try { rec = JSON.parse(localStorage.getItem('vb_pending_gate') || 'null'); } catch(e) {}
                 if (!rec || !rec.g) return;
-                clearGateLS();  // একবার চেক করলেই রেকর্ড শেষ — না মিললে নতুন গেটই শুরু হবে
-                if (Date.now() - (rec.t || 0) > 20*60*1000) return;  // ২০ মিনিটের পুরনো গেট আর ধরব না
+                // 🔧 বাগ-ফিক্স: আগে যাচাইয়ের আগেই রেকর্ড মুছে ফেলত — নেটওয়ার্ক একটু নাড়লেই ১০ সেকেন্ডের অ্যাড মানা গেট হারিয়ে যেত।
+                // এখন: ৩০ মিনিট পুরনো হলে বাদ, নাহলে যাচাই সফল/চূড়ান্ত-ব্যর্থ হলেই রেকর্ড মোছা হবে —
+                // নেটওয়ার্ক-ফেল হলে রেকর্ড থেকে যায়, পরের পেজ-লোডে আবার চেষ্টা হয় → অ্যাড দেখা ইউজার কখনোই ফাইল হারাবে না
+                if (Date.now() - (rec.t || 0) > 30*60*1000) { clearGateLS(); return; }
                 try {
                     const res = await fetch('/api/ad/verify', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({gateId: rec.g, initData: INIT_DATA})});
                     const v = await res.json();
-                    if (v && v.ok && v.done && rec.f) { sendFileRequest(rec.f, true); }  // ✅ আগের অ্যাড পুরো দেখা ছিল → ফাইল অটো-ডেলিভারি
-                } catch(e) {}
+                    if (v && v.ok && v.done && rec.f) { clearGateLS(); sendFileRequest(rec.f, true); }  // ✅ আগের অ্যাড পুরো দেখা ছিল → ফাইল অটো-ডেলিভারি
+                    else if (v && v.ok === false && v.msg && v.msg !== 'error') { clearGateLS(); }  // গেট আর নেই (বাতিল/খরচ) → রেকর্ড বাদ
+                } catch(e) {}  // নেটওয়ার্ক সমস্যা → রেকর্ড রেখে দাও, পরে আবার হবে
             }
 
             // 🛡️ অ্যান্টি-বাইপাস হেল্পার: শুধু অ্যাড পেজে (মিনি অ্যাপ লুকানো থাকা অবস্থায়) কাটানো সময়ই গোনা হয়;
@@ -2566,7 +2586,8 @@ async def web_ui():
     </body></html>'''
     
     html_code = html_code.replace("__ADL_JSON__", adl_json)
-    html_code = html_code.replace("__BOT_TOKEN__", TOKEN)
+    # 🔒 সিকিউরিটি: আগে এখানে __BOT_TOKEN__-এ আসল বট-টোকেন পাবলিক HTML-এ বসে যেত
+    # (যেকোনো ইউজার DevTools খুললেই টোকেন চুরি করতে পারত) — ক্লায়েন্ট-JS-এ টোকেনের কোনো ব্যবহারই নেই, তাই বাদ।
     html_code = html_code.replace("__AD_COUNT__", str(max(int(ad_count), 0)))
     html_code = html_code.replace("__AD_WAIT__", str(ad_wait))
     html_code = html_code.replace("__SPONSOR_JSON__", json.dumps(sponsor_buttons))
@@ -2578,7 +2599,14 @@ async def web_ui():
     lazy_banners = {"bannerDetail": banner_detail, "bannerDetailBottom": banner_detail_bottom, "bannerSuccess": banner_success, "bannerProfile": banner_profile}
     html_code = html_code.replace("__LAZY_BANNERS_JSON__", json.dumps(lazy_banners).replace('</', '<\\/'))
     html_code = html_code.replace("__BOT_USER__", BOT_USER)
-    return HTMLResponse(html_code)
+    # 💰 ব্যান্ডউইথ-সেভ (ETag): কনটেন্ট-হ্যাশ আঙুল-ছাপ। ১০ মিনিট পরে অ্যাপ খুললেও ব্রাউজার শুধু
+    # রিভ্যালিডেট করে — বদলানো না হলে ফাঁকা ৩০৪ (~০.৩KB; আগে পুরো ৬৭KB পেজ আসত)।
+    # অ্যাডমিন লিংক/ব্যানার/সেটিংস বদলালে হ্যাশ বদলায় → ইউজার অটো নতুন পেজ পায়।
+    etag = '"' + hashlib.sha256(html_code.encode("utf-8")).hexdigest()[:32] + '"'
+    _cc = "public, max-age=600, must-revalidate"
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": _cc})
+    return HTMLResponse(html_code, headers={"ETag": etag, "Cache-Control": _cc})
 
 # ==========================================
 # 10. Main Web App APIs
@@ -2668,18 +2696,74 @@ async def get_movie_by_id(movie_id: str, uid: int = 0):
         movie_out["quality"] = mv.get("quality", "Full Movie")
     return {"ok": True, "movie": movie_out}
 
+# ✅ UptimeRobot ও সেলফ-পিংয়ের Health Check Route
+@app.get("/ping")
+async def ping():
+    return {"status": "ok"}
+
+# ✅ অ্যান্টি-স্লিপ: প্রতি ১৪ মিনিটে নিজেকে পিং (Render ফ্রি ১৫ মিনিটে ঘুমায় — এতে বট ২৪ ঘণ্টা জাগ্রত থাকে)
+# খরচ: প্রতি পিং ~০.৩KB → মাসে ১০KB-এরও কম — ব্যান্ডউইথে কোনো চাপ নেই।
+async def self_pinger():
+    while True:
+        try:
+            base = os.getenv("RENDER_EXTERNAL_URL") or APP_URL or ""
+            if base:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(base.rstrip("/") + "/ping") as resp:
+                        print(f"Self-ping successful: {resp.status}")
+        except Exception as e:
+            print(f"Self-ping failed: {e}")
+        await asyncio.sleep(14 * 60)
+
+# 💰 ব্যান্ডউইথ-সেভ পোস্টার-এন্ডপয়েন্ট (Movie Box-এর সিস্টেমের মতো):
+# 🔒 সিকিউরিটি ফিক্স: আগে টেলিগ্রাম CDN-এ রিডাইরেক্ট করত — রিডাইরেক্ট URL-এ বট-টোকেন খোলা যেত!
+# এখন: একবার ডাউনলোড → ছোট থাম্বনেইল (max 480px JPEG) → ডিস্ক-ক্যাশ → ব্রাউজারে ৩০ দিনের ক্যাশ।
+# একই পোস্টারের বাইট বারবার সার্ভার থেকে যায় না — ব্যান্ডউইথ প্রায়-জিরো।
+POSTER_CACHE_DIR = "/tmp/bdv_posters"
+_IMG_CACHE_HEADERS = {"Cache-Control": "public, max-age=2592000, immutable"}  # ৩০ দিন
+_PLACEHOLDER_POSTER_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="220" height="330"><rect width="100%" height="100%" fill="#1e293b"/><text x="50%" y="50%" fill="#64748b" font-family="sans-serif" font-size="16" text-anchor="middle">BD Viral</text></svg>'
+
+def _svg_response(svg: str, status_code: int = 200):
+    return Response(content=svg, media_type="image/svg+xml", status_code=status_code)
+
 @app.get("/api/image/{photo_id}")
 async def get_image(photo_id: str):
     try:
+        disk_name = re.sub(r"[^A-Za-z0-9_-]", "_", photo_id) + ".jpg"
+        disk_path = os.path.join(POSTER_CACHE_DIR, disk_name)
+        if os.path.exists(disk_path):
+            return FileResponse(disk_path, media_type="image/jpeg", headers=_IMG_CACHE_HEADERS)
         cache = await db.file_cache.find_one({"photo_id": photo_id})
         now = datetime.datetime.utcnow()
         if cache and cache.get("expires_at", now) > now: file_path = cache["file_path"]
         else:
             file_info = await bot.get_file(photo_id); file_path = file_info.file_path
             await db.file_cache.update_one({"photo_id": photo_id}, {"$set": {"file_path": file_path, "expires_at": now + datetime.timedelta(hours=1)}}, upsert=True)
+        fname = (file_path or "").rsplit("/", 1)[-1]
+        ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+        media = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}.get(ext, "")
+        if ext and not media: return _svg_response(_PLACEHOLDER_POSTER_SVG)  # ভিডিও/ডকুমেন্ট-ফাইল
+        if not media: media = "image/jpeg"
         file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
-        return RedirectResponse(url=file_url)
-    except: return RedirectResponse(url="https://via.placeholder.com/110x160")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(file_url) as resp:
+                raw = await resp.read()
+        try:
+            import io
+            from PIL import Image
+            img = Image.open(io.BytesIO(raw)).convert("RGB")
+            img.thumbnail((480, 480))
+            buf = io.BytesIO(); img.save(buf, "JPEG", quality=72, optimize=True)
+            data = buf.getvalue()
+            try:
+                os.makedirs(POSTER_CACHE_DIR, exist_ok=True)
+                with open(disk_path, "wb") as f: f.write(data)
+            except Exception: pass
+            return Response(content=data, media_type="image/jpeg", headers=_IMG_CACHE_HEADERS)
+        except Exception:
+            # Pillow না থাকলে আসল বাইটসই — শুধু দিনভর ক্যাশ-হেডার দিয়ে
+            return Response(content=raw, media_type=media, headers={"Cache-Control": "public, max-age=86400"})
+    except: return _svg_response(_PLACEHOLDER_POSTER_SVG)
 
 # ✅ Rate Limiter / Queue System added to prevent Telegram Ban
 send_semaphore = asyncio.Semaphore(20)
