@@ -282,19 +282,19 @@ async def _gate_uid_guard(init_data: str):
     uid, _name = tg_user_from_init(init_data)
     return uid or 0
 
-# 📳 টাইমার-শেষ নোটিফিকেশন: অ্যাড খোলার wait সেকেন্ড পর বট নিজে থেকে ইউজারকে ছোট মেসেজ দেয় —
-# মেসেজ এলেই ফোনে নোটিফিকেশনে ভাইব্রেট/রিং হয় (টেলিগ্রামে সরাসরি "শুধু ভাইব্রেট" করানোর Bot API নেই)।
+# 🔔 সাউন্ড-সিস্টেম: অ্যাড খোলার (wait+১) সেকেন্ডে — ১০ সেকেন্ড সেটিং হলে ঠিক ১১ সেকেন্ডে — বট নিজে
+# থেকে ইউজারকে ছোট মেসেজ দেয়। ইউজার তখন অ্যাডে ব্যস্ত (টেলিগ্রাম-চ্যাটের বাইরে), তাই মেসেজ এলেই
+# ফোনে নোটিফিকেশন-সাউন্ড বাজবে (টং!) — শুনেই ইউজার Back দিয়ে ফিরে আসবে।
 # ইউজার আগেই ফিরে গেট ভেরিফাই/বাতিল করলে মেসেজ আর যায় না। 💰 খরচ: প্রতি গেটে ১টি ছোট মেসেজ।
 async def gate_notify_worker(uid: int, gate_id: str, wait_s: int):
     try:
-        await asyncio.sleep(max(5, int(wait_s)))
+        await asyncio.sleep(max(5, int(wait_s)) + 1)  # 🔔 wait+১ সেকেন্ড (১০ হলে ১১) — তখনই টং
         g = await db.ad_gates.find_one({"_id": ObjectId(gate_id)}, {"status": 1})
         if not g or g.get("status") != "running": return  # ভেরিফাই/বাতিল/খরচ হয়ে গেলে আর নয়
         try:
-            # 🔔 মালিকের নির্দেশ: বিপ একবারই — তিনবার নয়। ঠিক সময়ে মাত্র ১টা মেসেজ;
-            # মেসেজ এলেই ফোন নোটিফিকেশনে ভাইব্রেট/রিং করবে (ফোনের টেলিগ্রাম-সেটিং অনুযায়ী)।
-            _txt = (f"📳 বিপ! আপনার {wait_s} সেকেন্ডের অ্যাড-টাইম শেষ ✅\n"
-                    "এখন বিজ্ঞাপন থেকে Back দিয়ে বটে ফিরে আসুন — ফাইলটি নিয়ে নিন। 🎬")
+            # 🔔 মালিকের নির্দেশ: টং একবারই — ঠিক সময়ে মাত্র ১টা ছোট মেসেজ;
+            # মেসেজ এলেই ফোন নোটিফিকেশন-সাউন্ডে বাজবে (সব ফোনে কাজ করে — ভাইব্রেশন-সমস্যা শেষ)।
+            _txt = f"🔔 টং! আপনার {wait_s} সেকেন্ড শেষ ✅ — এখন অ্যাড থেকে Back দিয়ে বটে ফিরে এসে মুভি নিয়ে নিন 🎬"
             try:
                 _m = await bot.send_message(uid, _txt)
             except Exception:
@@ -328,7 +328,7 @@ async def ad_gate_start(d: GateStartModel):
             "uid": uid, "movie_id": d.movieId, "adult": True, "link": link,
             "started_at": now, "away_ms": 0, "away_start": None, "beats": 0,
             "status": "running", "verified_at": None, "consumed_at": None})
-        # 📳 টাইমার-শেষ নোটিফিকেশন: wait সেকেন্ড পর বট মেসেজ দেবে (ফোন ভাইব্রেট/রিং হবে)
+        # 🔔 টং-সাউন্ড: wait+১ সেকেন্ড পর বট মেসেজ দেবে — মেসেজ এলেই ফোনে নোটিফিকেশন-সাউন্ড বাজবে
         asyncio.create_task(gate_notify_worker(uid, str(res.inserted_id), aw))
         return {"ok": True, "gate_id": str(res.inserted_id), "link": link,
                 "wait": aw, "count": ac, "pool": pool_size}
@@ -2082,7 +2082,7 @@ async def web_ui(request: Request):
                 <div id="adProgress" class="ad-progress"></div>
                 <div class="ad-box-orange">ডাউনলোড করতে হলে অবশ্যই বিজ্ঞাপন দেখুন!</div>
                 <div class="ad-box-black" id="adBoxBlack">প্রতিটি বিজ্ঞাপন লিংকে ক্লিক করে কমপক্ষে <b id="adWaitText">__AD_WAIT__ সেকেন্ড</b> থাকুন, তারপর ফিরে এসে বাটনে ক্লিক করুন।</div>
-                <div class="ad-vibe-note">📳 <b>সহজ নিয়ম:</b> <span id="adVibeText">বিজ্ঞাপন খুলে __AD_WAIT__ সেকেন্ড থাকলে বট নিজে থেকেই আপনাকে মেসেজ দেবে — তখন ফোন ভাইব্রেট/রিং করবে 🔔। মেসেজ পেলেই Back দিয়ে ফিরে এসে ফাইল নিন, আর কিছু করতে হবে না!</span></div>
+                <div class="ad-vibe-note">🔔 <b>সহজ নিয়ম:</b> <span id="adVibeText">অ্যাড খুলে __AD_WAIT__ সেকেন্ড থাকুন — ফোনে সাউন্ড পাবেন, শুনলেই Back দিয়ে ফিরে এসে মুভি দেখুন 🎬</span></div>
                 <button class="ad-action-btn btn-ad-open" id="adClickBtn" onclick="openAdLink()">বিজ্ঞাপন খুলুন</button>
                 <button class="ad-action-btn btn-ad-unlock" id="adVerifyBtn" onclick="checkAdWatched()" style="display:none;">✅ অ্যাড দেখে ফিরে এসেছি</button>
                 <button class="ad-action-btn btn-ad-tryagain" id="adTryAgainBtn" onclick="resetAdModal()" style="display:none;">🔄 আবার চেষ্টা করুন</button>
@@ -2411,9 +2411,9 @@ async def web_ui(request: Request):
                 if (currentGateId) { try { fetch('/api/ad/abort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({gateId: currentGateId, initData: INIT_DATA}), keepalive: true}).catch(function(){}); } catch(e) {} currentGateId = null; }
                 if (adCountdownTimer) { clearInterval(adCountdownTimer); adCountdownTimer = null; }
                 let wEl = document.getElementById('adWaitText'); if (wEl) wEl.innerText = adSettings.ad_wait + ' সেকেন্ড';
-                // 📳 ভাইব্রেট-নোট আপডেট: সেটিং-এর আসল সেকেন্ড সংখ্যা দিয়ে
+                // 🔔 সাউন্ড-নোট আপডেট: সেটিং-এর আসল সেকেন্ড সংখ্যা দিয়ে
                 let vibeEl = document.getElementById('adVibeText');
-                if (vibeEl) vibeEl.innerHTML = `বিজ্ঞাপন খুলে <b>${adSettings.ad_wait} সেকেন্ড</b> থাকলে বট নিজে থেকেই আপনাকে মেসেজ দেবে — তখন ফোন ভাইব্রেট/রিং করবে 🔔। মেসেজ পেলেই Back দিয়ে ফিরে এসে ফাইল নিন, আর কিছু করতে হবে না!`;
+                if (vibeEl) vibeEl.innerHTML = `অ্যাড খুলে <b>${adSettings.ad_wait} সেকেন্ড</b> থাকুন — ফোনে সাউন্ড পাবেন, শুনলেই Back দিয়ে ফিরে এসে মুভি দেখুন 🎬`;
                 let stepEl = document.getElementById('adProgress');
                 let warn = ' ⚠️ সময়ের আগে ফিরে এলে আবার শুরু থেকে দেখতে হবে!';
                 if (stepEl) { stepEl.innerHTML = adSettings.ad_count > 1 ? `আপনাকে মোট <b>${adSettings.ad_count}টি</b> বিজ্ঞাপন দেখতে হবে। প্রতিটি লিংকে ক্লিক করে কমপক্ষে <b>${adSettings.ad_wait} সেকেন্ড</b> অপেক্ষা করে ফিরে আসুন.${warn}` : `লিংকে ক্লিক করে বিজ্ঞাপনটি দেখুন এবং কমপক্ষে <b>${adSettings.ad_wait} সেকেন্ড</b> অপেক্ষা করে ফিরে এসে নিচের বাটনে ক্লিক করুন.${warn}`; }
@@ -2461,9 +2461,6 @@ async def web_ui(request: Request):
 
             async function openAdLink() {
                 if (gateOpening) return; gateOpening = true;
-                // 📳 টেপ দিলেই ফোন ভাইব্রেট করবে (Telegram হ্যাপটিক ইঞ্জিন + ব্রাউজার ফলব্যাক)
-                try { tg.HapticFeedback.impactOccurred('medium'); } catch (e) {}
-                try { if (navigator.vibrate) navigator.vibrate(80); } catch (e) {}
                 document.getElementById('adClickBtn').style.display = 'none';
                 try {
                     // 🛡️ লিংক + gate_id সার্ভার থেকেই আসে (র‍্যান্ডম, no-repeat) — ক্লায়েন্টে লিংক বদলানোর সুযোগ নেই
@@ -2490,11 +2487,7 @@ async def web_ui(request: Request):
                     adCountdownTimer = setInterval(() => {
                         // ⏱️ ওয়াল-ক্লক কাউন্টডাউন (০.২৫ সে টিক — থ্রটল হলেও ফিরে এসে সঠিক সময় দেখাবে)
                         const remain = Math.max(0, Math.ceil((adSettings.ad_wait * 1000 - (Date.now() - adStartTime)) / 1000));
-                        if (remain <= 0) { 
-                            vBtn.disabled = false; vBtn.innerText = '✅ অ্যাড দেখে ফিরে এসেছি'; 
-                            // 📳 অ্যাপে থাকলে (PC/ফিরে-এসে) টাইমার শেষ হলেই এক ঝটকা ভাইব্রেট/বিপ — একবারই
-                            if (!adBuzzDone) { adBuzzDone = true; try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {} try { if (navigator.vibrate) navigator.vibrate([500,120,500]); } catch(e) {} }
-                        }
+                        if (remain <= 0) { vBtn.disabled = false; vBtn.innerText = '✅ অ্যাড দেখে ফিরে এসেছি'; }
                         else { vBtn.innerText = `⏳ অপেক্ষা করুন ${remain}s`; }
                     }, 250);
                 } catch(e) {
