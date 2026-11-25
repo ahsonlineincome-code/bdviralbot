@@ -4,3 +4,4 @@ uvicorn
 motor
 apscheduler
 aiohttp
+pillow
