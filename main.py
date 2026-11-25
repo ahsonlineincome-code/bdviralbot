@@ -145,12 +145,16 @@ async def init_db():
     await db.ad_clicks.create_index([("user_id", 1), ("clicked_at", -1)])
     await db.ad_clicks.create_index("clicked_at")
     # 🛡️ সার্ভার-সাইড অ্যাড গেট (Movie Box BD-এর সেম সিস্টেম): গেট রেকর্ড + ৭-দিনের স্ট্যাটস
-    await db.ad_gates.create_index([("uid", 1), ("started_at", -1)])
-    await db.ad_gates.create_index([("movie_id", 1), ("status", 1), ("verified_at", -1)])
-    try: await db.ad_gates.drop_index("started_at_1")
-    except Exception: pass
-    # ৭ দিন পর মঙ্গো-নিজেও অটো-ক্লিন (ব্যাকআপ; প্যানেল খুললে অ্যাপ-লেভেল ক্লিনাপও চলে)
-    await db.ad_gates.create_index("started_at", expireAfterSeconds=60*60*24*7)
+    # 🛡️ ক্র্যাশ-প্রুফ: পুরনো ডাটাবেজে ইনডেক্স কনফ্লিক্ট হলেও বট বন্ধ হবে না — /start সবসময় বেঁচে থাকবে
+    try:
+        await db.ad_gates.create_index([("uid", 1), ("started_at", -1)])
+        await db.ad_gates.create_index([("movie_id", 1), ("status", 1), ("verified_at", -1)])
+        try: await db.ad_gates.drop_index("started_at_1")
+        except Exception: pass
+        # ৭ দিন পর মঙ্গো-নিজেও অটো-ক্লিন (ব্যাকআপ; প্যানেল খুললে অ্যাপ-লেভেল ক্লিনাপও চলে)
+        await db.ad_gates.create_index("started_at", expireAfterSeconds=60*60*24*7)
+    except Exception as e:
+        print(f"⚠️ ad_gates index warning — বট তবুও চলবে: {e}")
     if not await db.settings.find_one({"id": "ad_wait"}):
         await db.settings.update_one({"id": "ad_wait"}, {"$set": {"value": DEFAULT_AD_WAIT}}, upsert=True)
     # প্রি-সেট সিড: ডাটাবেজে সেটিং না থাকলে মালিকের লিংক/ব্যানার/গেট সংখ্যা বসিয়ে দাও
@@ -287,9 +291,14 @@ async def gate_notify_worker(uid: int, gate_id: str, wait_s: int):
         g = await db.ad_gates.find_one({"_id": ObjectId(gate_id)}, {"status": 1})
         if not g or g.get("status") != "running": return  # ভেরিফাই/বাতিল/খরচ হয়ে গেলে আর নয়
         try:
-            await bot.send_message(uid,
+            beep = await bot.send_message(uid,
                 f"📳 বিপ! আপনার {wait_s} সেকেন্ডের অ্যাড-টাইম শেষ ✅\n"
                 "এখন বিজ্ঞাপন থেকে Back দিয়ে বটে ফিরে আসুন — ফাইলটি নিয়ে নিন। 🎬")
+            # ⏱️ মিডিয়াম-শো টাইম: বিপ মেসেজ ১০ সেকেন্ড থাকবে (ইউজার ফিরে এসে চোখে পড়বে),
+            # তারপর বট নিজে থেকেই মেসেজটা মুছে দেবে — চ্যাটে বারবার জমে বিরক্তির কারণ হবে না
+            await asyncio.sleep(10)
+            try: await bot.delete_message(uid, beep.message_id)
+            except Exception: pass
         except Exception:
             pass  # ইউজার বট ব্লক করে থাকলেও গেট চলবে — শুধু মেসেজ যাবে না
     except Exception as e:
@@ -564,9 +573,10 @@ async def broadcast_queue_worker():
 @app.on_event("startup")
 async def on_startup():
     global BOT_USER
-    await init_db()
-    await load_admins()
-    await load_banned_users()
+    # 🛡️ ক্র্যাশ-প্রুফ স্টার্টআপ: যেকোনো ধাপ ফেল করলেও বট + anti-sleep pinger চালু থাকবে
+    for _name, _coro in (("db-init", init_db()), ("admins", load_admins()), ("banned", load_banned_users())):
+        try: await _coro
+        except Exception as e: print(f"⚠️ Startup step '{_name}' failed — বট তবুও চলবে: {e}")
     # বটের আসল username নিয়ে নিই (শেয়ার ডিপ-লিংকের জন্য)
     try:
         me = await bot.get_me()
@@ -590,6 +600,23 @@ async def on_startup():
 # ==========================================
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
+    # 🛡️ /start বুলেট-প্রুফ: ভেতরের যেকোনো ধাপে ভুল হলেও ইউজার সবসময় উত্তর পাবে —
+    # (ভেতরের কোনো ডাটাবেজ-এররে /start কখনো চুপ হয়ে যাবে না — Movie Box-এর সেম সিস্টেম)
+    try:
+        await _start_flow(message, state)
+    except Exception as _se:
+        print(f"⚠️ Start flow error → fallback welcome যাচ্ছে: {_se}")
+        try:
+            _fb_kb = []
+            if APP_URL: _fb_kb.append([types.InlineKeyboardButton(text="🎬 Watch Now", web_app=types.WebAppInfo(url=APP_URL))])
+            await message.answer(
+                f"👋 <b>স্বাগতম {message.from_user.first_name}!</b>\n\n🔥 BD Viral Box জগতে আপনাকে স্বাগতম। নিচের বাটনে ক্লিক করে মুভি উপভোগ করুন।",
+                parse_mode="HTML",
+                reply_markup=types.InlineKeyboardMarkup(inline_keyboard=_fb_kb) if _fb_kb else None)
+        except Exception:
+            pass
+
+async def _start_flow(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if uid in banned_cache:
         return await message.answer("🚫 আপনাকে ব্যান করা হয়েছে।", parse_mode="HTML")
@@ -2953,15 +2980,30 @@ async def submit_payment(data: PaymentModel):
 # 11. Main Application Startup
 # ==========================================
 async def start():
-    await init_db()
-    await load_admins()
-    await load_banned_users()
+    # 🛡️ বুট ক্র্যাশ-প্রুফ: ডাটাবেজ/কনফিগ লোডে কোনো ভুল হলেও বট মরবে না — লগে কারণ দেখাবে,
+    # বট উঠে যাবে আর /start সহ সব কমান্ড কাজ করবে (আগে এই ধাপে এরর হলে পুরো বট বন্ধ হয়ে যেত)
+    for _name, _coro in (("db-init", init_db()), ("admins", load_admins()), ("banned", load_banned_users())):
+        try: await _coro
+        except Exception as e: print(f"⚠️ Startup step '{_name}' failed — বট তবুও চলবে: {e}")
     port = int(os.getenv("PORT", 8000))
     config = uvicorn.Config(app, host="0.0.0.0", port=port, loop="asyncio")
     server = uvicorn.Server(config)
     asyncio.create_task(auto_delete_worker())
-    await bot.delete_webhook(drop_pending_updates=True)
-    await asyncio.gather(server.serve(), dp.start_polling(bot))
+
+    # 🔄 পোলিং-সুপারভাইজার: নেটওয়ার্ক খারাপ/অন্য কোথাও টোকেন কনফ্লিক্ট হলেও বট নিজে থেকে
+    # ১০ সেকেন্ড পর আবার polling চালু করে — তাই /start একদিনের জন্যও মরে থাকবে না
+    async def polling_supervisor():
+        while True:
+            try:
+                await bot.delete_webhook(drop_pending_updates=True)
+                print("✅ Polling চালু — /start সহ সব কমান্ড এখন কাজ করবে।")
+                await dp.start_polling(bot)
+                break
+            except Exception as e:
+                print(f"⚠️ Polling বন্ধ হয়েছিল ({e}) → ১০ সেকেন্ড পর আবার চালু হচ্ছে...")
+                await asyncio.sleep(10)
+
+    await asyncio.gather(server.serve(), polling_supervisor())
 
 if __name__ == "__main__": 
     loop = asyncio.get_event_loop()
