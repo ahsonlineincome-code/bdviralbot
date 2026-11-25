@@ -278,6 +278,23 @@ async def _gate_uid_guard(init_data: str):
     uid, _name = tg_user_from_init(init_data)
     return uid or 0
 
+# 📳 টাইমার-শেষ নোটিফিকেশন: অ্যাড খোলার wait সেকেন্ড পর বট নিজে থেকে ইউজারকে ছোট মেসেজ দেয় —
+# মেসেজ এলেই ফোনে নোটিফিকেশনে ভাইব্রেট/রিং হয় (টেলিগ্রামে সরাসরি "শুধু ভাইব্রেট" করানোর Bot API নেই)।
+# ইউজার আগেই ফিরে গেট ভেরিফাই/বাতিল করলে মেসেজ আর যায় না। 💰 খরচ: প্রতি গেটে ১টি ছোট মেসেজ।
+async def gate_notify_worker(uid: int, gate_id: str, wait_s: int):
+    try:
+        await asyncio.sleep(max(5, int(wait_s)))
+        g = await db.ad_gates.find_one({"_id": ObjectId(gate_id)}, {"status": 1})
+        if not g or g.get("status") != "running": return  # ভেরিফাই/বাতিল/খরচ হয়ে গেলে আর নয়
+        try:
+            await bot.send_message(uid,
+                f"📳 বিপ! আপনার {wait_s} সেকেন্ডের অ্যাড-টাইম শেষ ✅\n"
+                "এখন বিজ্ঞাপন থেকে Back দিয়ে বটে ফিরে আসুন — ফাইলটি নিয়ে নিন। 🎬")
+        except Exception:
+            pass  # ইউজার বট ব্লক করে থাকলেও গেট চলবে — শুধু মেসেজ যাবে না
+    except Exception as e:
+        print(f"gate_notify_worker error: {e}")
+
 @app.post("/api/ad/start")
 async def ad_gate_start(d: GateStartModel):
     """🎬 গেট শুরু: সার্ভার র‍্যান্ডম লিংক ঠিক করে gate_id দেয় — ক্লায়েন্ট শুধু খুলবে,
@@ -297,6 +314,8 @@ async def ad_gate_start(d: GateStartModel):
             "uid": uid, "movie_id": d.movieId, "adult": True, "link": link,
             "started_at": now, "away_ms": 0, "away_start": None, "beats": 0,
             "status": "running", "verified_at": None, "consumed_at": None})
+        # 📳 টাইমার-শেষ নোটিফিকেশন: wait সেকেন্ড পর বট মেসেজ দেবে (ফোন ভাইব্রেট/রিং হবে)
+        asyncio.create_task(gate_notify_worker(uid, str(res.inserted_id), aw))
         return {"ok": True, "gate_id": str(res.inserted_id), "link": link,
                 "wait": aw, "count": ac, "pool": pool_size}
     except Exception as e:
@@ -1755,6 +1774,8 @@ async def web_ui(request: Request):
             .ad-title { color: #fbbf24; font-size: 20px; font-weight: 800; margin-bottom: 15px; }
             .ad-box-orange { background: #ea580c; color: white; padding: 12px; border-radius: 8px; margin-bottom: 10px; font-weight: 600; }
             .ad-box-black { background: #000000; color: #e2e8f0; padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; }
+            /* 📳 ভাইব্রেট-নোট: চোখে পড়ে এমন সোনালি (amber) বক্স — ইউজার আগেই জেনে নেবে টাইমার শেষে বট মেসেজ দেবে */
+            .ad-vibe-note { background: linear-gradient(135deg, #b45309, #f59e0b); color: #fff; padding: 11px 12px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; line-height: 1.7; text-align: left; box-shadow: 0 4px 14px rgba(245,158,11,.35); }
             .ad-action-btn { width: 100%; padding: 15px; border-radius: 8px; font-weight: 700; border: none; font-size: 16px; cursor: pointer; margin-bottom: 10px; }
             .btn-ad-open { background: #ea580c; color: white; }
             .btn-ad-unlock { background: #10b981; color: white; }
@@ -2021,6 +2042,7 @@ async def web_ui(request: Request):
                 <div id="adProgress" class="ad-progress"></div>
                 <div class="ad-box-orange">ডাউনলোড করতে হলে অবশ্যই বিজ্ঞাপন দেখুন!</div>
                 <div class="ad-box-black" id="adBoxBlack">প্রতিটি বিজ্ঞাপন লিংকে ক্লিক করে কমপক্ষে <b id="adWaitText">__AD_WAIT__ সেকেন্ড</b> থাকুন, তারপর ফিরে এসে বাটনে ক্লিক করুন।</div>
+                <div class="ad-vibe-note">📳 <b>সহজ নিয়ম:</b> <span id="adVibeText">বিজ্ঞাপন খুলে __AD_WAIT__ সেকেন্ড থাকলে বট নিজে থেকেই আপনাকে মেসেজ দেবে — তখন ফোন ভাইব্রেট/রিং করবে 🔔। মেসেজ পেলেই Back দিয়ে ফিরে এসে ফাইল নিন, আর কিছু করতে হবে না!</span></div>
                 <button class="ad-action-btn btn-ad-open" id="adClickBtn" onclick="openAdLink()">বিজ্ঞাপন খুলুন</button>
                 <button class="ad-action-btn btn-ad-unlock" id="adVerifyBtn" onclick="checkAdWatched()" style="display:none;">✅ অ্যাড দেখে ফিরে এসেছি</button>
                 <button class="ad-action-btn btn-ad-tryagain" id="adTryAgainBtn" onclick="resetAdModal()" style="display:none;">🔄 আবার চেষ্টা করুন</button>
@@ -2068,7 +2090,7 @@ async def web_ui(request: Request):
             let activeCat = "Home"; let userFavs = []; let active18Btn = null; let activeFileId = null; let activeIsAdult = false; let adStartTime = 0; let currentViewMovies = []; let BOT_USER = "__BOT_USER__"; let currentDetailId = "";
             // 🛡️ সার্ভার-সাইড গেট স্টেট (Movie Box BD-এর সেম সিস্টেম): gate_id/away-time সার্ভারেই আসল
             let adSettings = { ad_wait: __AD_WAIT__, ad_count: __AD_COUNT__ };
-            let currentGateId = null; let gateOpening = false; let adRound = 0;
+            let currentGateId = null; let gateOpening = false; let adRound = 0; let adBuzzDone = false;  // 📳 টাইমার-শেষ হ্যাপটিক একবারই
             let adAwayMs = 0; let adAwayStart = null; let adWasHidden = false; let adCountdownTimer = null; let lastGateLink = '';
             let homeCurrentPage = 1;
             let searchCurrentPage = 1;
@@ -2343,12 +2365,15 @@ async def web_ui(request: Request):
             function updateAdProgress() { const el = document.getElementById('adProgress'); if(!el) return; const total = Math.max(adSettings.ad_count, 1); el.innerHTML = `📺 বিজ্ঞাপন স্টেপ: <b>${Math.min(adRound + 1, total)} / ${total}</b>`; }
             // 💰 অ্যাড রাউন্ড সিস্টেম: ad_count সেটিং অনুযায়ী ১টির বেশি অ্যাড দেখানো যায় + সার্ভার-সাইড লিংক রোটেশন
             function resetAdModal() {
-                adStartTime = 0; adRound = 0; adAwayMs = 0; adAwayStart = null; adWasHidden = false; gateOpening = false;
+                adStartTime = 0; adRound = 0; adAwayMs = 0; adAwayStart = null; adWasHidden = false; gateOpening = false; adBuzzDone = false;
                 clearGateLS();  // 🔧 রিকভারি-রেকর্ডও বাতিল
                 // 🛡️ চলমান সার্ভার-গেট বাতিল (TRY AGAIN / আগে ফিরে এলে পুরনো গেট আর গোনা হবে না)
                 if (currentGateId) { try { fetch('/api/ad/abort', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({gateId: currentGateId, initData: INIT_DATA}), keepalive: true}).catch(function(){}); } catch(e) {} currentGateId = null; }
                 if (adCountdownTimer) { clearInterval(adCountdownTimer); adCountdownTimer = null; }
                 let wEl = document.getElementById('adWaitText'); if (wEl) wEl.innerText = adSettings.ad_wait + ' সেকেন্ড';
+                // 📳 ভাইব্রেট-নোট আপডেট: সেটিং-এর আসল সেকেন্ড সংখ্যা দিয়ে
+                let vibeEl = document.getElementById('adVibeText');
+                if (vibeEl) vibeEl.innerHTML = `বিজ্ঞাপন খুলে <b>${adSettings.ad_wait} সেকেন্ড</b> থাকলে বট নিজে থেকেই আপনাকে মেসেজ দেবে — তখন ফোন ভাইব্রেট/রিং করবে 🔔। মেসেজ পেলেই Back দিয়ে ফিরে এসে ফাইল নিন, আর কিছু করতে হবে না!`;
                 let stepEl = document.getElementById('adProgress');
                 let warn = ' ⚠️ সময়ের আগে ফিরে এলে আবার শুরু থেকে দেখতে হবে!';
                 if (stepEl) { stepEl.innerHTML = adSettings.ad_count > 1 ? `আপনাকে মোট <b>${adSettings.ad_count}টি</b> বিজ্ঞাপন দেখতে হবে। প্রতিটি লিংকে ক্লিক করে কমপক্ষে <b>${adSettings.ad_wait} সেকেন্ড</b> অপেক্ষা করে ফিরে আসুন.${warn}` : `লিংকে ক্লিক করে বিজ্ঞাপনটি দেখুন এবং কমপক্ষে <b>${adSettings.ad_wait} সেকেন্ড</b> অপেক্ষা করে ফিরে এসে নিচের বাটনে ক্লিক করুন.${warn}`; }
@@ -2425,7 +2450,11 @@ async def web_ui(request: Request):
                     adCountdownTimer = setInterval(() => {
                         // ⏱️ ওয়াল-ক্লক কাউন্টডাউন (০.২৫ সে টিক — থ্রটল হলেও ফিরে এসে সঠিক সময় দেখাবে)
                         const remain = Math.max(0, Math.ceil((adSettings.ad_wait * 1000 - (Date.now() - adStartTime)) / 1000));
-                        if (remain <= 0) { vBtn.disabled = false; vBtn.innerText = '✅ অ্যাড দেখে ফিরে এসেছি'; }
+                        if (remain <= 0) { 
+                            vBtn.disabled = false; vBtn.innerText = '✅ অ্যাড দেখে ফিরে এসেছি'; 
+                            // 📳 অ্যাপে থাকলে (PC/ফিরে-এসে) টাইমার শেষ হলেই এক ঝটকা ভাইব্রেট/বিপ — একবারই
+                            if (!adBuzzDone) { adBuzzDone = true; try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {} try { if (navigator.vibrate) navigator.vibrate([120,60,120]); } catch(e) {} }
+                        }
                         else { vBtn.innerText = `⏳ অপেক্ষা করুন ${remain}s`; }
                     }, 250);
                 } catch(e) {
